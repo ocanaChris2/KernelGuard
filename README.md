@@ -1,4 +1,4 @@
-# SideChannelKernelPreventor
+﻿﻿# KernelGuard
 
 A Windows 11 x64 Ring-0 kernel-mode driver (WDM) that detects and actively mitigates side-channel attacks, compromised kernels, and hardware keyloggers.
 
@@ -39,8 +39,8 @@ The driver operates under a **zero-trust kernel assumption**: it cannot rely on 
 Module 2 detects unauthorized keyboard filter drivers by comparing hardware-reported devices against the OS driver stack. In a virtual machine (VMware, VirtualBox, Hyper-V, QEMU/KVM) the hypervisor inserts its own virtual keyboard filter drivers into the stack. The driver cannot distinguish these from a rootkit filter and will flag them as `ALERT_UNAUTHORIZED_KBD_FILTER`, patching or detaching the filter via `NeutralizePassThroughDispatch` / `IoDetachDevice`. The result is **complete keyboard input loss** for the VM guest while the driver is running.
 
 **Recovery (mouse must still work):**
-1. Right-click `stop_driver.bat` (provided at the repo root) → **Run as administrator**. This runs `sc stop ScpdDriver && sc delete ScpdDriver` without requiring any keyboard input.
-2. Alternatively: right-click the Start button → *Terminal (Admin)* → `sc stop ScpdDriver` typed via the on-screen keyboard (Settings → Accessibility → Keyboard → On-Screen Keyboard).
+1. Right-click `stop_driver.bat` (provided at the repo root) → **Run as administrator**. This runs `sc stop KernelGuard && sc delete KernelGuard` without requiring any keyboard input.
+2. Alternatively: right-click the Start button → *Terminal (Admin)* → `sc stop KernelGuard` typed via the on-screen keyboard (Settings → Accessibility → Keyboard → On-Screen Keyboard).
 3. In VirtualBox/VMware: revert to a snapshot taken before loading the driver.
 
 **Workaround:** A hypervisor-detection check via `CPUID` leaf `0x1` (bit 31 of ECX = hypervisor present) is planned but not yet implemented. Until it is, avoid loading the driver in a VM for any purpose other than controlled testing with a snapshot ready.
@@ -68,7 +68,7 @@ False-positive `.text` mismatches can occur when:
 - A legitimate security product (EDR, AV) uses kernel callbacks that modify `.text` at runtime.
 - The driver loads before all kernel modules are fully initialized.
 
-If fail-safe mode triggers unexpectedly, check `SideChannelMonitor.exe` logs for `ALERT_TEXT_PATCH` and the `Param1`/`Param2` fields identifying which module hash changed.
+If fail-safe mode triggers unexpectedly, check `KernelGuardMonitor.exe` logs for `ALERT_TEXT_PATCH` and the `Param1`/`Param2` fields identifying which module hash changed.
 
 ---
 
@@ -98,7 +98,7 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Ring 3 (User Mode)                      │
-│  SideChannelMonitor.exe                                     │
+│  KernelGuardMonitor.exe                                     │
 │    ├── polls shared memory ring every 150 ms                │
 │    ├── validates each notification's HMAC-SHA256            │
 │    └── shows Windows balloon alerts for level ≥ 1           │
@@ -376,7 +376,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M5 — Compromised communication channel
 
 #### DeviceIoControl interception by rootkit
-**Attack:** A rootkit that has installed itself above this driver in the device stack (or has patched `IRP_MJ_DEVICE_CONTROL` in our dispatch table) can silently drop or forge IOCTL responses. If it drops `IOCTL_SCPD_GET_HMAC_KEY`, the monitor never validates HMAC and is unable to distinguish legitimate from forged alerts. If it forges `IOCTL_SCPD_MAP_SHARED_MEM` to return a mapping of the rootkit's own memory, the monitor reads attacker-controlled data.
+**Attack:** A rootkit that has installed itself above this driver in the device stack (or has patched `IRP_MJ_DEVICE_CONTROL` in our dispatch table) can silently drop or forge IOCTL responses. If it drops `IOCTL_KG_GET_HMAC_KEY`, the monitor never validates HMAC and is unable to distinguish legitimate from forged alerts. If it forges `IOCTL_KG_MAP_SHARED_MEM` to return a mapping of the rootkit's own memory, the monitor reads attacker-controlled data.
 
 **Real examples:** Zeus/SpyEye banking trojans intercepted IOCTL traffic to security software hooks. Carberp rootkit patched AV driver dispatch tables to suppress threat notifications. Turla rootkit neutralized EDR agents by forging IOCTL responses.
 
@@ -392,6 +392,10 @@ Each module is designed around a concrete threat model. This section maps every 
 **Mitigation:** The monotonically increasing `SequenceNumber` in `SECURE_NOTIFICATION` means the monitor detects any sequence gap (suppressed notifications) or re-used number (replay). The MSR fallback (`SecureCommMsrSignal`) writes a critical alert code directly to `MSR_COVERT_SIGNAL` (0x150). A companion Ring-0 helper reads this MSR directly, bypassing all device-stack and shared-memory paths that a rootkit could intercept.
 
 ---
+
+## Prerequisites
+
+| Requirement | Notes |
 |-------------|-------|
 | Windows 11 x64 (test VM) | `bcdedit /set testsigning on` + reboot required |
 | Visual Studio 2022 / 2025 | Desktop development with C++ workload |
@@ -405,10 +409,10 @@ Each module is designed around a concrete threat model. This section maps every 
 ## Repository layout
 
 ```
-SideChannelKernelPreventor/
+KernelGuard/
 │
 ├── src/
-│   ├── SideChannelPreventor.h        Master header: types, MSR constants, prototypes
+│   ├── KernelGuard.h               Master header: types, MSR constants, prototypes
 │   ├── driver_main.c                 DriverEntry / DriverUnload / device dispatch
 │   ├── shared_state.c                Global state, LogAlert, DispatchCrossModuleEvent
 │   ├── pmu_detection.c               Module 1: PMU config, PmiIsr, RDTSC profiling
@@ -418,34 +422,34 @@ SideChannelKernelPreventor/
 │   ├── secure_comms.c                Module 5: HMAC shared memory, MSR covert channel
 │   ├── asm/
 │   │   └── verw_flush.asm            MASM: PerformVerwFlush() — MFENCE + VERW 0x2B
-│   └── SideChannelPreventor.vcxproj  MSBuild driver project (WDM, DynamicLibrary+.sys)
+│   └── KernelGuard.vcxproj         MSBuild driver project (WDM, DynamicLibrary+.sys)
 │
 ├── usermode/
-│   ├── scpd_shared.h                 IOCTL codes + shared structures (kernel + user)
+│   ├── kg_shared.h                  IOCTL codes + shared structures (kernel + user)
 │   ├── main.c                        WinMain, tray icon, message pump
 │   ├── driver_comm.c / .h            Device open, IOCTL, HMAC verify, polling thread
 │   ├── log_window.c / .h             Modeless alert log dialog (ListView, Save Log)
 │   ├── resource.h                    Resource IDs
 │   ├── app.rc                        Menu, dialog, string table
-│   └── SideChannelMonitor.vcxproj    MSBuild monitor project (Win32 GUI)
+│   └── KernelGuardMonitor.vcxproj  MSBuild monitor project (Win32 GUI)
 │
-├── SideChannelPreventor.inf          Driver INF (install / uninstall / service registration)
-├── Deploy-SideChannelPreventor.ps1   PowerShell deploy script (build, sign, register, start)
-├── build.bat                         Legacy batch build wrapper (encoding issues on some consoles)
-├── CMakeLists.txt                    CMake/Ninja alternative build system
-├── CMakePresets.json                 CMake presets: x64-debug, x64-release
-├── cmake/FindWDK.cmake               WDK finder helper
-└── Kernel_SideChannel_Driver_Architecture.pdf  Authoritative architecture spec
+├── KernelGuard.inf               Driver INF (install / uninstall / service registration)
+├── Deploy-KernelGuard.ps1        PowerShell deploy script (build, sign, register, start)
+├── 
+├── 
+├── 
+├── 
+└── KernelGuard_Driver_Architecture_v1.1.pdf  Authoritative architecture spec
 ```
 
 ### Build outputs
 
 ```
-x64\Debug\SideChannelPreventor.sys    Kernel driver (debug)
-x64\Debug\SideChannelPreventor.pdb
-x64\Debug\SideChannelMonitor.exe      User-mode monitor (debug)
-x64\Release\SideChannelPreventor.sys  Kernel driver (release)
-x64\Release\SideChannelMonitor.exe    User-mode monitor (release)
+x64\Debug\KernelGuard.sys              Kernel driver (debug)
+x64\Debug\KernelGuard.pdb
+x64\Debug\KernelGuardMonitor.exe      User-mode monitor (debug)
+x64\Release\KernelGuard.sys            Kernel driver (release)
+x64\Release\KernelGuardMonitor.exe    User-mode monitor (release)
 ```
 
 ---
@@ -458,8 +462,8 @@ Use the deploy script's `build` action — it sets up paths automatically:
 
 ```powershell
 # From an elevated prompt (not required just to build, but consistent)
-.\Deploy-SideChannelPreventor.ps1 -Action build
-.\Deploy-SideChannelPreventor.ps1 -Action build -Configuration Release
+.\Deploy-KernelGuard.ps1 -Action build
+.\Deploy-KernelGuard.ps1 -Action build -Configuration Release
 ```
 
 ### Manual MSBuild
@@ -471,12 +475,12 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curren
 $root    = "C:\Users\<you>\...\SideChannelKernelPreventor"
 
 # Driver
-& $msbuild "$root\src\SideChannelPreventor.vcxproj" `
+& $msbuild "$root\src\KernelGuard.vcxproj" `
     /p:Configuration=Debug /p:Platform=x64 `
     /p:SolutionDir="$root\" /v:minimal /nologo
 
 # Monitor
-& $msbuild "$root\usermode\SideChannelMonitor.vcxproj" `
+& $msbuild "$root\usermode\KernelGuardMonitor.vcxproj" `
     /p:Configuration=Debug /p:Platform=x64 `
     /p:SolutionDir="$root\" /v:minimal /nologo
 ```
@@ -491,7 +495,7 @@ cmake --build --preset x64-debug
 
 ### Compiler flags
 
-The driver project enforces the following key flags (see `src/SideChannelPreventor.vcxproj`):
+The driver project enforces the following key flags (see `src/KernelGuard.vcxproj`):
 
 | Flag | Purpose |
 |------|---------|
@@ -508,53 +512,53 @@ The driver project enforces the following key flags (see `src/SideChannelPrevent
 
 ## Deploy
 
-`Deploy-SideChannelPreventor.ps1` requires an **elevated** PowerShell session and test-signing mode enabled.
+`Deploy-KernelGuard.ps1` requires an **elevated** PowerShell session and test-signing mode enabled.
 
 ```powershell
 # Full pipeline: build → sign → register → start → launch monitor
-.\Deploy-SideChannelPreventor.ps1
+.\Deploy-KernelGuard.ps1
 
 # Release build
-.\Deploy-SideChannelPreventor.ps1 -Configuration Release
+.\Deploy-KernelGuard.ps1 -Configuration Release
 
 # Skip build (use already-built .sys)
-.\Deploy-SideChannelPreventor.ps1 -SkipBuild
+.\Deploy-KernelGuard.ps1 -SkipBuild
 
 # Skip build and sign (binary already signed externally)
-.\Deploy-SideChannelPreventor.ps1 -SkipBuild -SkipSign
+.\Deploy-KernelGuard.ps1 -SkipBuild -SkipSign
 
 # Build only, do not install
-.\Deploy-SideChannelPreventor.ps1 -Action build
+.\Deploy-KernelGuard.ps1 -Action build
 
 # Check current service and monitor status
-.\Deploy-SideChannelPreventor.ps1 -Action status
+.\Deploy-KernelGuard.ps1 -Action status
 ```
 
 ### What the install action does
 
 1. **Pre-flight** — verifies test signing is on (`bcdedit`) and HVCI is off (registry check).
 2. **Build** (unless `-SkipBuild`) — MSBuild driver + monitor.
-3. **Sign** (unless `-SkipSign`) — creates or reuses a `CN=SideChannelPreventor Test Signing` self-signed certificate in `Cert:\CurrentUser\My`, installs it into `LocalMachine\Root` and `LocalMachine\TrustedPublisher`, then calls `signtool sign /fd sha256`.
+3. **Sign** (unless `-SkipSign`) — creates or reuses a `CN=KernelGuard Test Signing` self-signed certificate in `Cert:\CurrentUser\My`, installs it into `LocalMachine\Root` and `LocalMachine\TrustedPublisher`, then calls `signtool sign /fd sha256`.
 4. **Stop old instance** — terminates the monitor process and stops/removes any existing service.
 5. **Deploy binary** — copies the signed `.sys` to `%SystemRoot%\system32\drivers\`, verifies the installed copy's signature.
-6. **Register service** — writes service registry entries directly under `HKLM\...\Services\SideChannelPreventor` (avoids `sc.exe` pending-deletion races).
-7. **Load driver** — `sc start SideChannelPreventor`.
-8. **Launch monitor** — starts `SideChannelMonitor.exe`.
+6. **Register service** — writes service registry entries directly under `HKLM\...\Services\KernelGuard` (avoids `sc.exe` pending-deletion races).
+7. **Load driver** — `sc start KernelGuard`.
+8. **Launch monitor** — starts `KernelGuardMonitor.exe`.
 
-> **Note:** `SideChannelPreventor` is a WDM kernel driver, not a minifilter. Loading is done via `sc start`, not `fltmc load`.
+> **Note:** `KernelGuard` is a WDM kernel driver, not a minifilter. Loading is done via `sc start`, not `fltmc load`.
 
 ### Manual installation (without the script)
 
 ```powershell
 # Copy binary
-Copy-Item x64\Debug\SideChannelPreventor.sys $env:SystemRoot\system32\drivers\ -Force
+Copy-Item x64\Debug\KernelGuard.sys $env:SystemRoot\system32\drivers\ -Force
 
 # Register and start
-sc.exe create SideChannelPreventor type= kernel binPath= "$env:SystemRoot\system32\drivers\SideChannelPreventor.sys"
-sc.exe start  SideChannelPreventor
+sc.exe create KernelGuard type= kernel binPath= "$env:SystemRoot\system32\drivers\KernelGuard.sys"
+sc.exe start  KernelGuard
 
 # Launch monitor
-.\x64\Debug\SideChannelMonitor.exe
+.\x64\Debug\KernelGuardMonitor.exe
 ```
 
 ---
@@ -562,7 +566,7 @@ sc.exe start  SideChannelPreventor
 ## Uninstall
 
 ```powershell
-.\Deploy-SideChannelPreventor.ps1 -Action uninstall
+.\Deploy-KernelGuard.ps1 -Action uninstall
 ```
 
 This stops the monitor process, stops and deletes the service, and removes the `.sys` from `system32\drivers`.
@@ -571,7 +575,7 @@ This stops the monitor process, stops and deletes the service, and removes the `
 
 ## Alert protocol
 
-The driver sends notifications through a non-paged **shared memory ring** (`SHARED_MEM_REGION`) exposed to the monitor via `IOCTL_SCPD_MAP_SHARED_MEM`. Every slot is authenticated with HMAC-SHA256.
+The driver sends notifications through a non-paged **shared memory ring** (`SHARED_MEM_REGION`) exposed to the monitor via `IOCTL_KG_MAP_SHARED_MEM`. Every slot is authenticated with HMAC-SHA256.
 
 ```c
 typedef struct _SECURE_NOTIFICATION {
@@ -609,12 +613,12 @@ typedef struct _SECURE_NOTIFICATION {
 
 ## IOCTL reference
 
-The monitor opens `\\.\SideChannelPreventor` with `FILE_READ_ACCESS` and calls two IOCTLs at startup:
+The monitor opens `\\.\KernelGuard` with `FILE_READ_ACCESS` and calls two IOCTLs at startup:
 
 | IOCTL | Code | Direction | Returns |
 |-------|------|-----------|---------|
-| `IOCTL_SCPD_MAP_SHARED_MEM` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | Pointer to `SHARED_MEM_REGION` mapped into the calling process |
-| `IOCTL_SCPD_GET_HMAC_KEY` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | 32-byte HMAC-SHA256 key for notification authentication |
+| `IOCTL_KG_MAP_SHARED_MEM` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | Pointer to `SHARED_MEM_REGION` mapped into the calling process |
+| `IOCTL_KG_GET_HMAC_KEY` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | 32-byte HMAC-SHA256 key for notification authentication |
 
 ---
 
@@ -665,7 +669,7 @@ All integrity comparisons (SHA-256 hash checks in M3, HMAC verification in M5) u
 Every user-controlled index used to access an array goes through `SafeArrayIndex()` (constant-time bounds masking) before the load. All user-pointer accesses in IOCTL handlers use `LFENCE` before dereferencing.
 
 ### FORCEINLINE placement
-`ExecuteSecurityBoundaryFlush()` and other `FORCEINLINE` functions that are called from multiple translation units have their **bodies in the header** (`SideChannelPreventor.h`), below the declarations of all symbols they reference. Placing the body in a `.c` file would allow the Release optimizer to inline within that TU and discard the external symbol, causing linker errors in callers.
+`ExecuteSecurityBoundaryFlush()` and other `FORCEINLINE` functions that are called from multiple translation units have their **bodies in the header** (`KernelGuard.h`), below the declarations of all symbols they reference. Placing the body in a `.c` file would allow the Release optimizer to inline within that TU and discard the external symbol, causing linker errors in callers.
 
 ---
 
@@ -684,5 +688,3 @@ Every user-controlled index used to access an array goes through `SafeArrayIndex
 | Multi-socket / NUMA | PMU and CAT configuration runs per logical CPU via IPI; cross-socket CAT topology is not verified. |
 | AMD support | MSR addresses and CPUID leaf handling target Intel SDM. AMD equivalents (`MSR_AMD_VIRT_SPEC_CTRL` 0xC0011F00) are defined but not fully exercised. |
 | Test signing only | The deploy script creates a self-signed test certificate. A production deployment requires a Microsoft-issued EV code-signing certificate and WHQL submission. |
-#   K e r n e l G u a r d  
- 
