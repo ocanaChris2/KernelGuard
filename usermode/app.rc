@@ -1,0 +1,41 @@
+#include "resource.h"
+#include <windows.h>
+#include <commctrl.h>
+
+// ── String table ──────────────────────────────────────────────────────────────
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE       "SideChannel Kernel Preventor"
+    IDS_TRAY_TIP        "SideChannel Kernel Preventor — Monitoring"
+    IDS_DRIVER_MISSING  "Kernel driver not found.\nPlease install the driver first."
+END
+
+// ── Tray context menu ─────────────────────────────────────────────────────────
+IDR_TRAY_MENU MENU
+BEGIN
+    POPUP ""
+    BEGIN
+        MENUITEM "Open Alert &Log",     ID_TRAY_OPEN_LOG
+        MENUITEM "Clear Log",           ID_TRAY_CLEAR_LOG
+        MENUITEM SEPARATOR
+        MENUITEM "&About",              ID_TRAY_ABOUT
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",               ID_TRAY_EXIT
+    END
+END
+
+// ── Alert log dialog ──────────────────────────────────────────────────────────
+IDD_LOG_DIALOG DIALOGEX 0, 0, 560, 340
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX
+CAPTION "SideChannel Monitor — Alert Log"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_LOG_LIST,
+                    "SysListView32",
+                    LVS_REPORT | LVS_NOSORTHEADER | LVS_SINGLESEL |
+                    WS_BORDER | WS_TABSTOP | WS_VSCROLL,
+                    7, 7, 546, 295
+    PUSHBUTTON      "Clear", IDC_CLEAR_BTN,    7, 310, 60, 14
+    PUSHBUTTON      "Save Log...", IDC_SAVE_BTN, 72, 310, 70, 14
+    LTEXT           "", IDC_STATUS_BAR,        150, 312, 403, 10
+END

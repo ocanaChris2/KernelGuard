@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DEFECTS>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25613</LINE>
+      <COLUMN>15</COLUMN>
+    </SFA>
+    <DEFECTCODE>28160</DEFECTCODE>
+    <DESCRIPTION>Anotación de error: Must succeed pool allocations are forbidden. Allocation failures cause a system crash.</DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PATH>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>c:\program files (x86)\windows kits\10\include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+      </SFA>
+    </PATH>
+  </DEFECT>
+  <DEFECT>
+    <SFA>
+      <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+      <FILENAME>wdm.h</FILENAME>
+      <LINE>25604</LINE>
+      <COLUMN>0</COLUMN>
+    </SFA>
+    <DEFECTCODE>6387</DEFECTCODE>
+    <DESCRIPTION>'return' puede ser '0':  no cumple con las especificaciones de la función 'ExAllocatePoolZero'. </DESCRIPTION>
+    <FUNCTION>ExAllocatePoolZero</FUNCTION>
+    <DECORATED>ExAllocatePoolZero</DECORATED>
+    <FUNCLINE>25604</FUNCLINE>
+    <PROBABILITY>1</PROBABILITY>
+    <RANK>4</RANK>
+    <CATEGORY>
+      <RULECATEGORY>mspft</RULECATEGORY>
+    </CATEGORY>
+    <PATH>
+      <SFA>
+        <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25610</LINE>
+        <COLUMN>10</COLUMN>
+      </SFA>
+      <SFA>
+        <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25613</LINE>
+        <COLUMN>15</COLUMN>
+        <KEYEVENT>
+          <ID>1</ID>
+          <KIND>declaration</KIND>
+          <IMPORTANCE>Essential</IMPORTANCE>
+          <MESSAGE>'Allocation' puede ser NULL</MESSAGE>
+        </KEYEVENT>
+      </SFA>
+      <SFA>
+        <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25625</LINE>
+        <COLUMN>4</COLUMN>
+        <KEYEVENT>
+          <ID>2</ID>
+          <KIND>alias</KIND>
+          <IMPORTANCE>Essential</IMPORTANCE>
+          <MESSAGE>(alias) 'return' recibe el valor de 'Allocation' (que puede ser NULL)</MESSAGE>
+        </KEYEVENT>
+      </SFA>
+      <SFA>
+        <FILEPATH>C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\</FILEPATH>
+        <FILENAME>wdm.h</FILENAME>
+        <LINE>25604</LINE>
+        <COLUMN>0</COLUMN>
+        <KEYEVENT>
+          <ID>3</ID>
+          <KIND>usage</KIND>
+          <IMPORTANCE>Essential</IMPORTANCE>
+          <MESSAGE>'return' no debe ser NULL, porque esto no es coherente con la anotación SAL de 'ExAllocatePoolZero'.</MESSAGE>
+        </KEYEVENT>
+      </SFA>
+    </PATH>
+  </DEFECT>
+</DEFECTS>

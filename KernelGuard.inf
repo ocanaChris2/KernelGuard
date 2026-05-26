@@ -1,0 +1,142 @@
+﻿;/*++
+;
+; Module Name:
+;     KernelGuard.inf
+;
+; Abstract:
+;     INF installation file for the KernelGuard kernel-mode driver.
+;     Installs as a boot-start kernel driver (SERVICE_KERNEL_DRIVER) with
+;     SERVICE_SYSTEM_START so mitigation is active before any user process runs.
+;
+;--*/
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "System"
+ClassGuid   = {4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderString%
+DriverVer   = 05/21/2026,1.0.0.0
+CatalogFile = KernelGuard.cat
+PnpLockdown = 1
+
+;
+; ============================================================================
+; STRING DEFINITIONS
+; ============================================================================
+;
+
+[Strings]
+ProviderString          = "KernelGuard Security Research"
+ServiceDescription      = "Side-Channel Attack Detection & Mitigation Driver"
+ServiceName             = "KernelGuard"
+DiskId1                 = "KernelGuard Installation Disk"
+ServiceDesc             = "KernelGuard Driver"
+
+;
+; ============================================================================
+; DESTINATION DIRECTORIES
+; ============================================================================
+;
+; 12 = %windir%\system32\drivers
+;
+
+[DestinationDirs]
+DefaultDestDir              = 12
+KernelGuard_Files  = 12
+
+;
+; ============================================================================
+; DEFAULT INSTALL
+; ============================================================================
+;
+
+[DefaultInstall]
+OptionDesc  = %ServiceDescription%
+CopyFiles   = KernelGuard_Files
+
+[DefaultInstall.Services]
+AddService  = %ServiceName%,,KernelGuard_Service_Registration
+
+;
+; ============================================================================
+; DEFAULT UNINSTALL
+; ============================================================================
+;
+
+[DefaultUninstall]
+DelFiles        = KernelGuard_Files
+LegacyUninstall = 1
+
+[DefaultUninstall.Services]
+DelService = %ServiceName%,0x200
+
+;
+; ============================================================================
+; SOURCE DISK INFORMATION
+; ============================================================================
+;
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[SourceDisksFiles]
+KernelGuard.sys = 1,,
+
+;
+; ============================================================================
+; FILE COPY
+; ============================================================================
+;
+
+[KernelGuard_Files]
+KernelGuard.sys,,,0x00000040  ; COPYFLG_OVERWRITE_OLDER_ONLY
+
+;
+; ============================================================================
+; SERVICE REGISTRATION
+; ============================================================================
+;
+; ServiceType  = 1  (SERVICE_KERNEL_DRIVER)
+; StartType    = 1  (SERVICE_SYSTEM_START) — loads during kernel init, before
+;                   any user process, ensuring mitigations are in place at boot.
+;                   Use StartType = 3 (SERVICE_DEMAND_START) for development.
+; ErrorControl = 1  (SERVICE_ERROR_NORMAL) — log error but continue boot.
+;
+
+[KernelGuard_Service_Registration]
+DisplayName    = %ServiceDesc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 1               ; SERVICE_SYSTEM_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\KernelGuard.sys
+LoadOrderGroup = Extended Base
+AddReg         = KernelGuard_ServiceData
+
+;
+; ============================================================================
+; SERVICE DATA
+; ============================================================================
+;
+
+[KernelGuard_ServiceData]
+HKR,,"SupportedFeatures",0x00010001,0x3
+
+;
+; ============================================================================
+; ARCHITECTURE-SPECIFIC SECTIONS
+; ============================================================================
+;
+
+[DefaultInstall.NTamd64]
+OptionDesc  = %ServiceDescription%
+CopyFiles   = KernelGuard_Files
+
+[DefaultInstall.NTamd64.Services]
+AddService  = %ServiceName%,,KernelGuard_Service_Registration
+
+[DefaultUninstall.NTamd64]
+DelFiles        = KernelGuard_Files
+LegacyUninstall = 1
+
+[DefaultUninstall.NTamd64.Services]
+DelService = %ServiceName%,0x200

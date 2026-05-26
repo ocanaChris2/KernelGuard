@@ -1,0 +1,211 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0"
+         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{2A8F3D1E-4B7C-4E9A-8D2F-1C6E5A3B0F74}</ProjectGuid>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <RootNamespace>KernelGuard</RootNamespace>
+    <ProjectName>KernelGuard</ProjectName>
+    <!-- WDK root from the registry (set by WDK installer) -->
+    <WDKContentRoot>$(Registry:HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows Kits\Installed Roots@KitsRoot10)</WDKContentRoot>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <!--
+    Use DynamicLibrary with TargetExt=.sys instead of ConfigurationType=Driver.
+    Driver ConfigurationType requires the WDK VS extension toolset; DynamicLibrary
+    works with the standard v145 toolset and gives us full control over flags.
+  -->
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+    <TargetExt>.sys</TargetExt>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <!-- Kernel drivers cannot have a manifest -->
+    <EmbedManifest>false</EmbedManifest>
+    <GenerateManifest>false</GenerateManifest>
+    <!-- /DRIVER:WDM implies /RELEASE which conflicts with /INCREMENTAL -->
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+    <TargetExt>.sys</TargetExt>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <EmbedManifest>false</EmbedManifest>
+    <GenerateManifest>false</GenerateManifest>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- MASM build customization — provides the MASM item type for verw_flush.asm -->
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
+  </ImportGroup>
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+    <TargetExt>.sys</TargetExt>
+    <WdkVer>10.0.26100.0</WdkVer>
+    <!-- WDK include paths: km headers + shared headers + SDK shared -->
+    <WdkKmIncludes>$(WDKContentRoot)Include\$(WdkVer)\km;$(WDKContentRoot)Include\$(WdkVer)\shared</WdkKmIncludes>
+    <!-- Kernel-mode lib path -->
+    <WdkKmLibs>$(WDKContentRoot)Lib\$(WdkVer)\km\x64</WdkKmLibs>
+  </PropertyGroup>
+
+  <!-- ── Debug ── -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <Optimization>Disabled</Optimization>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <PreprocessorDefinitions>
+        _DEBUG;DBG=1;
+        _AMD64_;AMD64;_WIN64;
+        NTDDI_VERSION=0x0A000009;WINVER=0x0A00;_WIN32_WINNT=0x0A00;
+        WINNT=1;_KERNEL_MODE=1;POOL_NX_OPTIN=1;NT_UP=0;
+        NTSTRSAFE_LIB;
+        %(PreprocessorDefinitions)
+      </PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(WdkKmIncludes);$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <CompileAs>CompileAsC</CompileAs>
+      <!-- Kernel mode: no C++ exceptions, no RTTI -->
+      <ExceptionHandling>false</ExceptionHandling>
+      <!-- /GS- : no CRT buffer security cookie (we use BufferOverflowFastFailK.lib) -->
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <!-- /kernel: Ring-0 semantic restrictions; /GS-: no CRT cookie -->
+      <!-- /Qspectre: retpoline — critical for side-channel prevention -->
+      <!-- /analyze-: suppress PREfast warnings from WDK headers -->
+      <AdditionalOptions>/kernel /GS- /Qspectre /analyze- %(AdditionalOptions)</AdditionalOptions>
+      <!-- RTC (_RTC_*) requires the CRT which is unavailable in kernel mode -->
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <!-- MultiThreaded: static, no CRT DLL — kernel links against ntoskrnl -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <!-- Suppress common WDK/kernel header warnings -->
+      <DisableSpecificWarnings>4201;4214;4324;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <SDLCheck>false</SDLCheck>
+    </ClCompile>
+    <Link>
+      <OutputFile>$(OutDir)$(TargetName).sys</OutputFile>
+      <!--
+        Kernel-mode libs:
+          ntoskrnl.lib           - NT kernel services
+          hal.lib                - Hardware Abstraction Layer
+          wdm.lib                - WDM driver model
+          BufferOverflowFastFailK.lib - Stack cookie + GsDriverEntry wrapper
+          aux_klib.lib           - AuxKlib (module enumeration)
+          bcrypt.lib             - BCrypt cryptographic APIs
+          ntstrsafe.lib          - Kernel-mode safe string functions
+      -->
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wdm.lib;BufferOverflowFastFailK.lib;aux_klib.lib;cng.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(WdkKmLibs);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <SubSystem>Native</SubSystem>
+      <Driver>WDM</Driver>
+      <!-- GsDriverEntry: kernel security-cookie init wrapper that calls DriverEntry -->
+      <EntryPointSymbol>GsDriverEntry</EntryPointSymbol>
+      <!-- Exclude all user-mode CRT default libs -->
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <!-- MASM: no safe exception handlers for kernel-mode .asm -->
+    <MASM>
+      <UseSafeExceptionHandlers>false</UseSafeExceptionHandlers>
+    </MASM>
+  </ItemDefinitionGroup>
+
+  <!-- ── Release ── -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <PreprocessorDefinitions>
+        NDEBUG;
+        _AMD64_;AMD64;_WIN64;
+        NTDDI_VERSION=0x0A000009;WINVER=0x0A00;_WIN32_WINNT=0x0A00;
+        WINNT=1;_KERNEL_MODE=1;POOL_NX_OPTIN=1;NT_UP=0;
+        NTSTRSAFE_LIB;
+        %(PreprocessorDefinitions)
+      </PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(WdkKmIncludes);$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <CompileAs>CompileAsC</CompileAs>
+      <ExceptionHandling>false</ExceptionHandling>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <AdditionalOptions>/kernel /GS- /Qspectre /analyze- %(AdditionalOptions)</AdditionalOptions>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DisableSpecificWarnings>4201;4214;4324;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <SDLCheck>false</SDLCheck>
+    </ClCompile>
+    <Link>
+      <OutputFile>$(OutDir)$(TargetName).sys</OutputFile>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wdm.lib;BufferOverflowFastFailK.lib;aux_klib.lib;cng.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(WdkKmLibs);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <SubSystem>Native</SubSystem>
+      <Driver>WDM</Driver>
+      <EntryPointSymbol>GsDriverEntry</EntryPointSymbol>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+    <MASM>
+      <UseSafeExceptionHandlers>false</UseSafeExceptionHandlers>
+    </MASM>
+  </ItemDefinitionGroup>
+
+  <!-- ── Source files ── -->
+  <ItemGroup>
+    <ClCompile Include="driver_main.c" />
+    <ClCompile Include="shared_state.c" />
+    <ClCompile Include="pmu_detection.c" />
+    <ClCompile Include="hw_keylogger_detect.c" />
+    <ClCompile Include="kernel_integrity.c" />
+    <ClCompile Include="cache_mitigation.c" />
+    <ClCompile Include="secure_comms.c" />
+  </ItemGroup>
+
+  <!-- MASM: PerformVerwFlush() — MFENCE + VERW for MDS mitigation -->
+  <ItemGroup>
+    <MASM Include="asm\verw_flush.asm" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="KernelGuard.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Inf Include="..\KernelGuard.inf" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <!-- MASM targets — must come AFTER Microsoft.Cpp.targets -->
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
+  </ImportGroup>
+
+</Project>

@@ -1,0 +1,7 @@
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\driver_main.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\driver_main.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\shared_state.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\shared_state.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\pmu_detection.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\pmu_detection.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\hw_keylogger_detect.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\hw_keylogger_detect.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\kernel_integrity.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\kernel_integrity.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\cache_mitigation.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\cache_mitigation.obj
+C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\secure_comms.c;C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\src\x64\Debug\secure_comms.obj

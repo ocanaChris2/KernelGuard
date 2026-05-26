@@ -1,0 +1,45 @@
+﻿**********************
+Inicio de la transcripción de Windows PowerShell
+Hora de inicio: 20260521185601
+Nombre de usuario: CHRISTIAN\fake_
+Usuario RunAs: CHRISTIAN\fake_
+Nombre de la configuración: 
+Máquina: CHRISTIAN (Microsoft Windows NT 10.0.26200.0)
+Aplicación host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\scpd_run.ps1
+Id. de proceso: 6452
+PSVersion: 5.1.26100.8457
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.8457
+BuildVersion: 10.0.26100.8457
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+La transcripción ha comenzado. El archivo de salida es C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\deploy_log.txt
+
+[....] Checking test-signing mode...
+[ OK ] Test-signing is already ON.
+
+[....] Locating signtool.exe...
+[ OK ] signtool: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe
+
+[....] Creating / reusing test code-signing certificate (CN=ScpdTestSign)...
+[ OK ] Reusing existing certificate: FA938FEE7F03858F56F574601102B4A501EB61FB
+
+[....] Signing driver...
+The following certificate was selected:
+    Issued to: ScpdTestSign
+    Issued by: ScpdTestSign
+    Expires:   Fri May 21 18:55:59 2027
+    SHA1 hash: FA938FEE7F03858F56F574601102B4A501EB61FB
+
+Done Adding Additional Store
+Successfully signed: C:\Users\fake_\OneDrive\Escritorio\SideChannelKernelPreventor\x64\Debug\SideChannelPreventor.sys
+
+Number of files successfully Signed: 1
+Number of warnings: 0
+Number of errors: 0
+[ OK ] Driver signed.
+
+[....] Removing any existing service...
