@@ -58,3 +58,13 @@ rule posture   alert=POSTURE_CHANGED level=warning do=webhook
 
 # A cache-timing pattern that is loud enough to be critical; hourly at most.
 rule cache     alert=PMU_L1D_ANOMALY,PMU_L2_ANOMALY level=critical throttle=3600 do=webhook
+
+# Someone with root loaded (VULN_DRIVER) or tried to load (DRIVER_BLOCKED) a module on the deny list: this is what
+# bringing your own vulnerable driver looks like.  Everybody, every time.  (Lock-mode refusals arrive at warning
+# level and are not matched here.)
+rule byovd     alert=VULN_DRIVER,DRIVER_BLOCKED level=critical throttle=300 do=webhook,mail,wall
+
+# The OS's own defences against a vulnerable driver are weak (no signature enforcement, no lockdown, no Secure
+# Boot).  Emitted once per module load, so this is a nudge, not an incident: do not match `alert=*` at warning
+# level unless you want one message per boot.  (Uncomment to be told.)
+#rule loadpolicy alert=LOAD_POLICY level=warning throttle=86400 do=mail

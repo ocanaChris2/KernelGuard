@@ -193,8 +193,19 @@ NTSTATUS ObReferenceObjectByName(
 #define ALERT_IDT_HOOK              0x0020UL
 #define ALERT_DISPATCH_HOOK         0x0021UL
 #define ALERT_TEXT_PATCH            0x0022UL
+#define ALERT_MODULE_LOADED         0x0024UL  // lock mode: a driver appeared after the baseline (Linux: every module load)
+#define ALERT_VULN_DRIVER           0x0025UL  // a denied (known-vulnerable or malicious) driver is loaded
+#define ALERT_DRIVER_BLOCKED        0x0026UL  // Linux only: a load was refused (this driver cannot refuse one)
+#define ALERT_LOAD_POLICY           0x0027UL  // audit of the OS's own driver-load defences
 #define ALERT_SHARED_STATE_CORRUPT  0x0030UL
 #define ALERT_FAIL_SAFE_ENTERED     0x0031UL
+
+// ALERT_LOAD_POLICY Param1: weaknesses found in the OS's own defences against loading a vulnerable driver
+// (0 = none).  The Windows bits start at 0x100; the Linux ones, below that, are in kernelguard_uapi.h.
+// Param2 is the raw CodeIntegrityOptions word the audit read.
+#define KG_LP_TESTSIGNING           0x0100UL  // test signing on, or code integrity switched off
+#define KG_LP_NO_HVCI               0x0200UL  // memory integrity (HVCI) is off
+#define KG_LP_NO_BLOCKLIST          0x0400UL  // Microsoft vulnerable-driver blocklist explicitly disabled
 
 //==============================================================================
 // x64 IDT entry (16 bytes, Intel SDM Vol.3A §6.14)
@@ -443,7 +454,7 @@ typedef struct _DRIVER_SHARED_STATE {
     ULONG           PolicyVersion;      // layout/behaviour version of this block
     LONG            EnforceMode;        // 0 = detect and report only, 1 = enforce (see KgEnforcing)
     ULONG           CurrentClos;        // Module 4 class of service (reserved)
-    ULONG           Reserved0;
+    ULONG           LockMode;           // 0 = off, 1 = report every driver loaded after start (see KgLockMode)
 
     // ── Integrity ────────────────────────────────────────────────────────────
     KSPIN_LOCK      StateLock;
@@ -467,6 +478,9 @@ typedef struct _DRIVER_SHARED_STATE {
     volatile LONG   DispatchHookDetected;
     volatile LONG   TextPatchDetected;
     ULONG           FailedModuleHashCount;
+    volatile LONG   VulnDriverDetected;     // Module 3.4: denied drivers seen
+    volatile LONG   DriverLockViolations;   // Module 3.4: lock-mode reports
+    volatile LONG   DriversHashed;          // Module 3.4: driver files digested
 
     // Module 4
     volatile LONG   SensPageCount;
@@ -481,7 +495,7 @@ typedef struct _DRIVER_SHARED_STATE {
 // The hashed range is [0, StateLock): exactly the four policy ULONGs.
 C_ASSERT(FIELD_OFFSET(DRIVER_SHARED_STATE, StateLock) == 4 * sizeof(ULONG));
 
-#define KG_POLICY_VERSION 1UL
+#define KG_POLICY_VERSION 2UL   // 2: Reserved0 became LockMode
 
 //==============================================================================
 // Global state declarations (defined in shared_state.c)
@@ -542,6 +556,11 @@ NTSTATUS BuildIntegrityBaseline(VOID);
 NTSTATUS VerifyModuleIntegrity(PBASELINE_ENTRY Entry);
 NTSTATUS ComputeSha256(PVOID Address, ULONG Size, UCHAR HashOut[32]);
 
+// Module 3.4 (driver_load_guard.c): the Windows answer to "bring your own vulnerable driver".
+// RegistryPath is the one DriverEntry received; it is read during the call and not kept.
+NTSTATUS DriverLoadGuardInitialize(PUNICODE_STRING RegistryPath);
+VOID     DriverLoadGuardUninitialize(VOID);
+
 //==============================================================================
 // Function prototypes — Module 4 (cache mitigation)
 //==============================================================================
@@ -594,6 +613,7 @@ BOOLEAN  IsAuthorizedDmaDevice(UCHAR Bus, UCHAR Device, UCHAR Function);
 // detect and report. Loaded once from the registry in DriverEntry.
 VOID     KgLoadPolicy(PUNICODE_STRING RegistryPath);
 BOOLEAN  KgEnforcing(VOID);
+BOOLEAN  KgLockMode(VOID);      // Parameters\LockMode: report every driver that appears after start
 
 //==============================================================================
 // External MASM function (verw_flush.asm)

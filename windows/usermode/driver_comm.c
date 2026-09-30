@@ -91,10 +91,25 @@ static LPCWSTR AlertTypeText(ULONG alertType)
     case ALERT_IDT_HOOK:                return L"IDT Hook Detected";
     case ALERT_DISPATCH_HOOK:           return L"Driver Dispatch Hook";
     case ALERT_TEXT_PATCH:              return L"Kernel .text Patched";
+    case ALERT_MODULE_LOADED:           return L"Driver Loaded (unexpected)";
+    case ALERT_VULN_DRIVER:             return L"Vulnerable Driver Loaded";
+    case ALERT_DRIVER_BLOCKED:          return L"Driver Load Blocked";
+    case ALERT_LOAD_POLICY:             return L"Driver Load Policy";
     case ALERT_SHARED_STATE_CORRUPT:    return L"Driver State Corrupted";
     case ALERT_FAIL_SAFE_ENTERED:       return L"CRITICAL: Fail-Safe Mode";
     default:                            return L"Unknown Alert";
     }
+}
+
+// A driver file name travels in Param1|Param2 as 16 ASCII bytes.
+static VOID UnpackName(ULONG64 p1, ULONG64 p2, CHAR out[17])
+{
+    memcpy(out, &p1, 8);
+    memcpy(out + 8, &p2, 8);
+    out[16] = '\0';
+    for (int i = 0; i < 16; i++)
+        if (out[i] && (out[i] < 0x20 || out[i] > 0x7E))
+            out[i] = '?';
 }
 
 static LPCWSTR AlertLevelText(ULONG level)
@@ -146,6 +161,22 @@ VOID DriverComm_FormatAlert(const SECURE_NOTIFICATION *n, ALERT_RECORD *out)
         _snwprintf_s(out->Details, 128, _TRUNCATE,
                      L"Base: 0x%016llX  Size: 0x%llX",
                      n->Param1, n->Param2);
+        break;
+    case ALERT_MODULE_LOADED:
+    case ALERT_VULN_DRIVER:
+    case ALERT_DRIVER_BLOCKED: {
+        CHAR name[17];
+
+        UnpackName(n->Param1, n->Param2, name);
+        _snwprintf_s(out->Details, 128, _TRUNCATE, L"name: \"%hs\"", name);
+        break;
+    }
+    case ALERT_LOAD_POLICY:
+        _snwprintf_s(out->Details, 128, _TRUNCATE, L"%s%s%s%s",
+                     n->Param1 ? L"weak:" : L"all on",
+                     (n->Param1 & KG_LP_TESTSIGNING)  ? L" test-signing/CI-off" : L"",
+                     (n->Param1 & KG_LP_NO_HVCI)      ? L" HVCI-off" : L"",
+                     (n->Param1 & KG_LP_NO_BLOCKLIST) ? L" blocklist-disabled" : L"");
         break;
     default:
         _snwprintf_s(out->Details, 128, _TRUNCATE,

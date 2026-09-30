@@ -92,7 +92,12 @@ static struct kg_dma_rec kg_dma_recs[KG_MAX_SUSPECT];
 static unsigned int kg_ndma;
 
 static struct delayed_work kg_hw_work;
-static bool kg_hw_stop;
+/*
+ * True until kg_hw_init() has set the work item up, and again after exit: the posture ladder kicks
+ * this monitor on every raise, including while it is still starting or when hw=0 left it off, and
+ * a kick must never reach an uninitialised work item.
+ */
+static bool kg_hw_stop = true;
 static bool kg_hw_running;
 static struct notifier_block kg_pci_nb;
 static bool kg_pci_nb_registered;
@@ -670,8 +675,8 @@ int kg_hw_init(void)
 	pr_info("PCI baseline: %u device(s) (%u answering in %s)\n", kg_nbase, kg_ncur,
 		kg_necam ? "ECAM, plus the OS view" : "the OS view");
 
-	kg_hw_stop = false;
 	INIT_DELAYED_WORK(&kg_hw_work, kg_hw_workfn);
+	WRITE_ONCE(kg_hw_stop, false);          /* only now may a kick queue it */
 	kg_pci_nb.notifier_call = kg_pci_notify;
 	if (!bus_register_notifier(&pci_bus_type, &kg_pci_nb))
 		kg_pci_nb_registered = true;

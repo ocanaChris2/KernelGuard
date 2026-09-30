@@ -19,7 +19,8 @@ With no command it follows the ring: the backlog first, then new alerts, until i
 Follow alerts (the default).
 .TP
 .B status
-Show the module's state: mode, state integrity, response posture, the per-CPU mitigation table and the counters.
+Show the module's state: mode, state integrity, response posture, the driver-load gate and the result of its load-time
+audit, the per-CPU mitigation table and the counters.
 .TP
 \fBposture\fR [\fBset\fR \fILEVEL\fR]
 Show the response posture, what raised it, the automatic ceiling, the decay time and the effective scan intervals.
@@ -34,8 +35,15 @@ appearing afterwards is a new incident.
 \fBpolicy check\fR [\fIFILE\fR]
 Validate an escalation policy and exit. Errors name the file, the line and the reason.
 .TP
+\fBmodid\fR [\fB\-\-entry\fR] \fIFILE\fR
+Print what the driver-load gate matches a module by, read from a \fB.ko\fR file: the name and \fBsrcversion\fR (a
+\fBmod_deny=\fR entry is \fINAME\fR or \fINAME@SRCVERSION\fR), the version, whether a signature is appended, and the
+file's SHA-256. With \fB\-\-entry\fR print only the entry. \fIFILE\fR may be \fB\-\fR for standard input, which is how a
+compressed module gets in: \fBzstd \-dc x.ko.zst | kgmon modid \-\fR. Needs no driver and no privileges; the file is
+parsed, never loaded.
+.TP
 .B selftest
-Run the SHA-256/HMAC known-answer tests and the escalation-engine unit tests.
+Run the SHA-256/HMAC known-answer tests, the escalation-engine unit tests and the module-file parser tests.
 .TP
 \fBrun\fR [\fB\-\-sensitive\fR] [\fB\-\-\fR] \fICOMMAND\fR...
 Execute \fICOMMAND\fR. With \fB\-\-sensitive\fR, first enable, where the kernel supports them, an L1D flush on

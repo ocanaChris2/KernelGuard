@@ -12,7 +12,8 @@
  *   kgmon ack              acknowledge the alerts seen so far (escalation policy)
  *   kgmon policy check     validate an escalation policy file
  *   kgmon posture [set L]  graduated-response posture: show it, or step it (root)
- *   kgmon selftest         SHA-256 / HMAC-SHA256 known-answer tests
+ *   kgmon modid FILE|-     the mod_deny= entry (name@srcversion) of a .ko file
+ *   kgmon selftest         SHA-256 / HMAC, escalation-policy and module-file parser tests
  *   kgmon run --sensitive -- CMD...
  *                          exec CMD with the kernel's native per-task
  *                          mitigations enabled (see cmd_run())
@@ -60,9 +61,11 @@
 
 #include "kernelguard_uapi.h"
 #include "kg_hmac.h"
+#include "kg_modid.h"
 #include "kg_policy.h"
 
 _Static_assert(sizeof(struct kg_notification) == 72, "notification layout");
+_Static_assert(sizeof(struct kg_modgate_info) == 56, "modgate info layout");
 _Static_assert(offsetof(struct kg_notification, hmac) == KG_HMAC_AUTH_LEN, "hmac offset");
 _Static_assert(sizeof(struct kg_shared_region) == 16 + 72 * KG_NOTIFY_SLOTS, "ring layout");
 
@@ -185,6 +188,9 @@ static const char *alert_text(uint32_t t)
 	case KG_ALERT_TEXT_PATCH:              return "Kernel .text Patched";
 	case KG_ALERT_CTRL_REG_TAMPER:         return "CPU Control State Tampered";
 	case KG_ALERT_MODULE_LOADED:           return "Kernel Module Loaded";
+	case KG_ALERT_VULN_DRIVER:             return "Vulnerable Driver Loaded";
+	case KG_ALERT_DRIVER_BLOCKED:          return "Driver Load Blocked";
+	case KG_ALERT_LOAD_POLICY:             return "Driver Load Policy";
 	case KG_ALERT_SHARED_STATE_CORRUPT:    return "Driver State Corrupted";
 	case KG_ALERT_FAIL_SAFE_ENTERED:       return "CRITICAL: Fail-Safe Mode";
 	case KG_ALERT_POSTURE_CHANGED:         return "Response Posture Changed";
@@ -198,6 +204,19 @@ static const char *alert_text(uint32_t t)
 static const char *alert_title(uint32_t code)
 {
 	return alert_text(code);
+}
+
+/* LOAD_POLICY: what the OS's own driver-load defences looked like when the module started. */
+static void load_policy_text(uint64_t weak, uint64_t raw, char *out, size_t len)
+{
+	snprintf(out, len, "sig_enforce=%s lockdown=%s secure_boot=%s  %s%s%s%s",
+		 raw & KG_LP_RAW_SIG_ENFORCE ? "yes" : "no",
+		 raw & KG_LP_RAW_LOCKDOWN ? "yes" : "no",
+		 raw & KG_LP_RAW_SECUREBOOT ? "yes" : "no",
+		 weak & 0xffu ? "weak:" : "all on",
+		 weak & KG_LP_NO_SIG_ENFORCE ? " sig_enforce" : "",
+		 weak & KG_LP_NO_LOCKDOWN ? " lockdown" : "",
+		 weak & KG_LP_NO_SECUREBOOT ? " secure_boot" : "");
 }
 
 static void format_details(const struct kg_notification *n, char *out, size_t len)
@@ -214,8 +233,13 @@ static void format_details(const struct kg_notification *n, char *out, size_t le
 	case KG_ALERT_UNAUTHORIZED_KBD_FILTER:
 	case KG_ALERT_KBD_FILTER_NEUTRALIZED:
 	case KG_ALERT_MODULE_LOADED:
+	case KG_ALERT_VULN_DRIVER:
+	case KG_ALERT_DRIVER_BLOCKED:
 		unpack_name(p1, p2, name);
 		snprintf(out, len, "name: \"%s\"", name);
+		break;
+	case KG_ALERT_LOAD_POLICY:
+		load_policy_text(p1, p2, out, len);
 		break;
 	case KG_ALERT_UNAUTHORIZED_DMA:
 	case KG_ALERT_DEVICE_BME_DISABLED:
@@ -899,6 +923,29 @@ static int cmd_status(struct opts *o)
 		if (ioctl(c.fd, KG_IOC_GET_POSTURE, &pi) == 0)
 			printf("  posture         : %s  (details: kgmon posture)\n", posture_text(pi.posture));
 	}
+	{
+		struct kg_modgate_info mg;
+
+		if (ioctl(c.fd, KG_IOC_GET_MODGATE, &mg) == 0) {
+			if (mg.flags & KG_MODGATE_F_ACTIVE) {
+				printf("  module gate     : %s, deny %u, allow %u, lock %s (baseline %u)\n",
+				       mg.flags & KG_MODGATE_F_ENFORCING ? "refusing" : "detect-only",
+				       mg.n_deny, mg.n_allow, mg.flags & KG_MODGATE_F_LOCK ? "on" : "off",
+				       mg.n_baseline);
+				printf("  gate counters   : denied %" PRIu64 ", refused %" PRIu64 ", lock hits %" PRIu64
+				       ", ignored entries %u\n", (uint64_t)mg.deny_hits, (uint64_t)mg.blocked,
+				       (uint64_t)mg.lock_hits, mg.ignored);
+			} else {
+				printf("  module gate     : off (modgate=0)\n");
+			}
+			if (mg.flags & KG_MODGATE_F_AUDITED) {
+				char lp[128];
+
+				load_policy_text(mg.lp_mask, mg.lp_raw, lp, sizeof(lp));
+				printf("  load policy     : %s\n", lp);
+			}
+		}
+	}
 	printf("  modules         : pmu=%s  pci-ecam=%s  text=%s  input=%s\n",
 	       info.flags & KG_INFO_PMU_ACTIVE ? "on" : "off",
 	       info.flags & KG_INFO_ECAM_ACTIVE ? "on" : "off",
@@ -1076,14 +1123,111 @@ static int cmd_policy(struct opts *o, int argc, char **argv)
 	return 0;
 }
 
+/*
+ * `kgmon modid [--entry] FILE.ko|-`
+ *
+ * Prints what the driver-load gate matches a module by, read from the file: its name and
+ * srcversion (mod_deny= takes NAME or NAME@SRCVERSION), plus the file's SHA-256 for the audit
+ * trail.  `-` reads standard input, which is how a compressed module gets in:
+ *     zstd -dc /lib/modules/$(uname -r)/kernel/.../x.ko.zst | kgmon modid -
+ * Needs no driver and no privileges; the file is parsed, never loaded.
+ */
+#define MODID_MAX_BYTES (256u << 20)    /* the largest module anyone ships is a few tens of MiB */
+
+static uint8_t *read_module_file(const char *path, size_t *lenp)
+{
+	int fd = strcmp(path, "-") ? open(path, O_RDONLY | O_CLOEXEC) : STDIN_FILENO;
+	size_t cap = 1u << 20, len = 0;
+	uint8_t *buf;
+
+	if (fd < 0)
+		die("%s: %s", path, strerror(errno));
+	buf = malloc(cap);
+	if (!buf)
+		die("out of memory");
+	for (;;) {
+		ssize_t n;
+
+		if (len == cap) {
+			uint8_t *nb;
+
+			if (cap >= MODID_MAX_BYTES)
+				die("%s: larger than %u MiB, not a kernel module", path, MODID_MAX_BYTES >> 20);
+			cap *= 2;
+			nb = realloc(buf, cap);
+			if (!nb)
+				die("out of memory");
+			buf = nb;
+		}
+		n = read(fd, buf + len, cap - len);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			die("%s: %s", path, strerror(errno));
+		}
+		if (!n)
+			break;
+		len += (size_t)n;
+	}
+	if (fd != STDIN_FILENO)
+		close(fd);
+	*lenp = len;
+	return buf;
+}
+
+static int cmd_modid(int argc, char **argv)
+{
+	struct kg_modid m;
+	uint8_t *img;
+	size_t len;
+	char entry[96], hex[65];
+	const char *shown;
+	int entry_only = 0, rc;
+
+	if (argc >= 1 && !strcmp(argv[0], "--entry")) {
+		entry_only = 1;
+		argc--;
+		argv++;
+	}
+	if (argc != 1)
+		die("usage: kgmon modid [--entry] FILE.ko|-");
+
+	shown = strcmp(argv[0], "-") ? argv[0] : "(stdin)";
+	img = read_module_file(argv[0], &len);
+	rc = kg_modid_parse(img, len, &m);
+	free(img);
+	if (rc)
+		die("%s: %s", shown, kg_modid_strerror(rc));
+
+	kg_modid_entry(&m, entry, sizeof(entry));
+	if (entry_only) {
+		puts(entry);
+		return 0;
+	}
+	for (int i = 0; i < 32; i++)
+		snprintf(hex + 2 * i, 3, "%02x", m.sha256[i]);
+
+	printf("module      : %s\n", m.name);
+	printf("srcversion  : %s\n", m.srcversion[0] ? m.srcversion : "(none: an entry matches every version)");
+	printf("version     : %s\n", m.version[0] ? m.version : "(none)");
+	printf("vermagic    : %s\n", m.vermagic[0] ? m.vermagic : "(none)");
+	printf("signature   : %s\n", m.sig_marker ? "appended (the kernel checks it at load)"
+						  : "not appended (refused when the kernel enforces signatures)");
+	printf("sha256      : %s\n", hex);
+	printf("mod_deny    : %s\n", entry);
+	return 0;
+}
+
 static int cmd_selftest(void)
 {
 	int bad = kg_hmac_selftest();
 	int pbad = kgp_selftest();
+	int mbad = kg_modid_selftest();
 
 	printf("SHA-256 / HMAC-SHA256 known-answer tests: %s\n", bad ? "FAILED" : "passed");
 	printf("escalation policy tests: %s\n", pbad ? "FAILED" : "passed");
-	return bad || pbad ? 1 : 0;
+	printf("module file parser tests: %s\n", mbad ? "FAILED" : "passed");
+	return bad || pbad || mbad ? 1 : 0;
 }
 
 /*
@@ -1160,7 +1304,9 @@ static void usage(FILE *f)
 "                        or, as root, step it up or down after an investigation\n"
 "  ack                   acknowledge the alerts seen so far (stops \"unacked=\" escalation)\n"
 "  policy check [FILE]   validate an escalation policy file and exit\n"
-"  selftest              run SHA-256/HMAC and escalation-policy tests and exit\n"
+"  modid [--entry] FILE  print the mod_deny= entry (NAME@SRCVERSION) of a .ko file; FILE\n"
+"                        may be - to read standard input (for .ko.zst: zstd -dc x | kgmon modid -)\n"
+"  selftest              run the SHA-256/HMAC, escalation-policy and module-file tests and exit\n"
 "  run [--sensitive] [--] CMD...\n"
 "                        exec CMD with per-task L1D-flush / IBPB / SSBD / core\n"
 "                        scheduling enabled where the kernel supports them\n"
@@ -1235,6 +1381,8 @@ int main(int argc, char **argv)
 			return cmd_posture(&o, argc - optind - 1, argv + optind + 1);
 		if (!strcmp(cmd, "selftest"))
 			return cmd_selftest();
+		if (!strcmp(cmd, "modid"))
+			return cmd_modid(argc - optind - 1, argv + optind + 1);
 		if (!strcmp(cmd, "ack"))
 			return cmd_ack(&o);
 		if (!strcmp(cmd, "policy"))

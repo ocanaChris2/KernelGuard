@@ -59,7 +59,8 @@ static UINT         g_WmTaskbarCreated = 0;
 // Event Viewer adds a note that the description cannot be found.
 //
 // Event IDs:  900 monitor started   901 monitor stopped   902 driver not found
-//             1000 + alert code (1001..1049; see kg_shared.h)   1999 HMAC failure
+//             1000 + alert code (1001..1049; see kg_shared.h; the driver-load guard's are
+//             1036 lock mode / unreadable driver, 1037 vulnerable driver, 1039 load policy)   1999 HMAC failure
 // Type: Error for critical alerts and forged notifications, Warning for level 1,
 // Information otherwise.
 //==============================================================================

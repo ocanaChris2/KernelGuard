@@ -238,6 +238,10 @@ bool kg_in_failsafe(void)
  *   M2 PCI discrepancy     -> M3 immediate keyboard-path scan; posture ELEVATED
  *   M2 keyboard-path / BME -> posture ELEVATED
  *   M3 IDT/CR/MSR tamper   -> posture HIGH (M4 full-spectrum on all CPUs, held)
+ *   M3 denied driver ran   -> posture HIGH (the attack primitive exists); one that was
+ *                             already loaded when we started -> ELEVATED
+ *   M3 load refused        -> posture ELEVATED when it was a deny-list hit (someone with
+ *                             root tried); a lock-mode refusal changes nothing
  *   M3 text/dispatch hook  -> posture FAILSAFE (M5 notification is sent by kg_report)
  *   M4 state corruption    -> posture FAILSAFE
  *
@@ -279,6 +283,15 @@ static void kg_dispatch(u32 type, u32 level, u64 p1, u64 p2)
 
 	case KG_ALERT_MODULE_LOADED:
 		if (level >= KG_LEVEL_WATCH)            /* only a suspicious load, not every load */
+			kg_posture_raise(KG_POSTURE_ELEVATED, type);
+		break;
+
+	case KG_ALERT_VULN_DRIVER:
+		kg_posture_raise(level >= KG_LEVEL_CRITICAL ? KG_POSTURE_HIGH : KG_POSTURE_ELEVATED, type);
+		break;
+
+	case KG_ALERT_DRIVER_BLOCKED:
+		if (level >= KG_LEVEL_CRITICAL)
 			kg_posture_raise(KG_POSTURE_ELEVATED, type);
 		break;
 

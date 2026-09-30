@@ -1,0 +1,59 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Live-USB /init: bring up storage, find the KGDATA partition, run the scan, then power off
+# (or drop to a shell).  Kernel command line:
+#   kglive=auto   scan, write the report, power off        (default)
+#   kglive=shell  scan, write the report, then a root shell
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+mount -t tmpfs none /run
+mount -t tmpfs none /tmp
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+
+MODE=$(sed -n 's/.*kglive=\([^ ]*\).*/\1/p' /proc/cmdline)
+[ -n "$MODE" ] || MODE=auto
+dmesg -n 3
+
+echo "== KernelGuard live scanner  kernel $(uname -r)  cpus=$(grep -c ^processor /proc/cpuinfo)"
+
+# Storage, filesystem and input drivers ship as modules of the distro kernel.
+for m in $(cat /etc/live-modules 2>/dev/null); do modprobe "$m" 2>/dev/null; done
+# Give USB/NVMe a moment to enumerate.
+i=0
+while [ "$i" -lt 10 ]; do
+    ls /sys/class/block/ 2>/dev/null | grep -q '^sd\|^nvme\|^vd' && break
+    sleep 1; i=$((i + 1))
+done
+sleep 1
+
+# The data partition is the one holding /kgdata.marker.
+KGDATA=""
+mkdir -p /mnt/kgdata
+for dev in /dev/sd?[0-9]* /dev/nvme?n?p* /dev/vd?[0-9]*; do
+    [ -b "$dev" ] || continue
+    if mount -o rw "$dev" /mnt/kgdata 2>/dev/null; then
+        if [ -f /mnt/kgdata/kgdata.marker ]; then KGDATA=$dev; break; fi
+        umount /mnt/kgdata
+    fi
+done
+if [ -n "$KGDATA" ]; then
+    echo "== report volume: $KGDATA"
+else
+    echo "!! KGDATA partition not found: the report goes to /tmp only"
+fi
+
+export KGDATA_MNT=/mnt/kgdata KGDATA_DEV="$KGDATA"
+/bin/kg-live-scan
+RC=$?
+
+[ -z "$KGDATA" ] || { sync; umount /mnt/kgdata; }
+if [ "$RC" -eq 0 ]; then echo "LIVE-RESULT: PASS"; else echo "LIVE-RESULT: FAIL ($RC)"; fi
+
+if [ "$MODE" = shell ]; then
+    echo "== shell (poweroff -f to finish)"
+    setsid cttyhack sh
+fi
+poweroff -f

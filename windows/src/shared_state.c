@@ -64,6 +64,13 @@ static ULONG          g_AuthorizedDmaCount;
 // the stack; treating it as a rootkit filter takes the guest's keyboard away.
 // The value is stored in the hashed policy block of g_SharedState, so tampering with
 // it is caught by VerifySharedStateIntegrity().
+//
+// HKLM\SYSTEM\CurrentControlSet\Services\KernelGuard\Parameters\LockMode (REG_DWORD)
+//     1        the driver-load guard (driver_load_guard.c) also reports every driver that
+//              appears after start, not only the ones on a deny list
+//     0/absent off
+// It is read in a query of its own, so a wrong-typed Enforce cannot switch it off, and it
+// sits in the hashed policy block too.
 //==============================================================================
 
 static BOOLEAN KgHypervisorPresent(VOID)
@@ -79,6 +86,7 @@ VOID KgLoadPolicy(PUNICODE_STRING RegistryPath)
 
     ULONG   enforce = 0xFFFFFFFFUL;         // "not set"
     ULONG   unset   = 0xFFFFFFFFUL;
+    ULONG   lockMode = 0;
     BOOLEAN hv      = KgHypervisorPresent();
     BOOLEAN fromReg = FALSE;
 
@@ -97,6 +105,19 @@ VOID KgLoadPolicy(PUNICODE_STRING RegistryPath)
         if (!NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, keyPath,
                                                table, NULL, NULL)))
             enforce = 0xFFFFFFFFUL;         // unreadable is treated as not set
+
+        RTL_QUERY_REGISTRY_TABLE lockTable[2];
+        ULONG lockRaw = 0;
+        RtlZeroMemory(lockTable, sizeof(lockTable));
+        lockTable[0].Flags         = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+        lockTable[0].Name          = L"LockMode";
+        lockTable[0].EntryContext  = &lockRaw;
+        lockTable[0].DefaultType   = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+        lockTable[0].DefaultData   = &lockRaw;
+        lockTable[0].DefaultLength = sizeof(lockRaw);
+        if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, keyPath,
+                                              lockTable, NULL, NULL)))
+            lockMode = (lockRaw == 1UL) ? 1UL : 0UL;
     }
 
     LONG mode;
@@ -112,7 +133,10 @@ VOID KgLoadPolicy(PUNICODE_STRING RegistryPath)
 
     g_SharedState.PolicyVersion = KG_POLICY_VERSION;
     g_SharedState.EnforceMode   = mode;
+    g_SharedState.LockMode      = lockMode;
 
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[KG] Driver-load lock mode %s (Parameters\\LockMode)\n", lockMode ? "ON" : "OFF");
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
                "[KG] Enforcement %s (%s%s)\n",
                mode ? "ON" : "OFF (detect and report only)",
@@ -127,6 +151,11 @@ VOID KgLoadPolicy(PUNICODE_STRING RegistryPath)
 BOOLEAN KgEnforcing(VOID)
 {
     return g_SharedState.EnforceMode != 0;
+}
+
+BOOLEAN KgLockMode(VOID)
+{
+    return g_SharedState.LockMode != 0;
 }
 
 //==============================================================================
@@ -302,6 +331,7 @@ VOID DispatchCrossModuleEvent(ULONG AlertType, ULONG AlertLevel,
                               ULONG64 Param1, ULONG64 Param2)
 {
     ULONG cpuIdx = KeGetCurrentProcessorIndex();
+    BOOLEAN notified = FALSE;
 
     switch (AlertType) {
 
@@ -348,6 +378,20 @@ VOID DispatchCrossModuleEvent(ULONG AlertType, ULONG AlertLevel,
         EnterFailSafeMode();
         break;
 
+    case ALERT_VULN_DRIVER:
+        // M3.4 -> M5: a denied driver is loaded.  Critical means it arrived after start (or is in the
+        // malicious class): the attack primitive exists, so the rest of the driver runs as after any
+        // kernel tamper.  The alert goes out first, so the log reads cause, then effect.
+        if (AlertLevel >= 2) {
+            if (KeGetCurrentIrql() == PASSIVE_LEVEL)
+                SecureCommNotify(AlertType, AlertLevel, Param1, Param2);
+            else
+                SecureCommMsrSignal(AlertType);
+            notified = TRUE;
+            EnterFailSafeMode();
+        }
+        break;
+
     default:
         break;
     }
@@ -355,6 +399,8 @@ VOID DispatchCrossModuleEvent(ULONG AlertType, ULONG AlertLevel,
     // Deliver notification to user-mode. SecureCommNotify calls BCrypt and has
     // PAGED_CODE(), so it is only safe at PASSIVE_LEVEL. Fall back to the MSR
     // covert channel when called above PASSIVE_LEVEL (e.g., from a DPC).
+    if (notified)
+        return;
     if (KeGetCurrentIrql() == PASSIVE_LEVEL)
         SecureCommNotify(AlertType, AlertLevel, Param1, Param2);
     else

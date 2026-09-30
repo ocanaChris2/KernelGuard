@@ -93,7 +93,7 @@ jobs:
         run: |
           export TMPDIR="$GITHUB_WORKSPACE/.kgvm-tmp" KG_KEEP=1 KG_KERNEL="/boot/vmlinuz-$(uname -r)"
           mkdir -p "$TMPDIR"
-          make -C linux test TESTS="basic integrity monitor deploy input posture escalate"
+          make -C linux test TESTS="basic integrity monitor deploy input posture escalate modgate"
 
       # PMU, SMT topology, PCIe hot-plug, lifecycle (PMU parameter checks) and stress depend on what the (nested) hypervisor exposes.
       # Advisory until the first runs show they are stable on hosted runners.

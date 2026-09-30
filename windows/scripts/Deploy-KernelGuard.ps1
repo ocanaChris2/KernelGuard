@@ -45,6 +45,21 @@ param(
     [ValidateSet('auto', 'detect', 'enforce')]
     [string]$Enforcement = 'auto',
 
+    # Driver-load guard (Module 3.4, "bring your own vulnerable driver").  Each of these is written only when
+    # you pass it, so re-running the script to upgrade the driver leaves an operator-managed list alone;
+    # -LockMode:$false and an empty list ( -DenyDriverHash @() ) switch a setting off again.
+    #   -LockMode          also report every driver that appears after start (Parameters\LockMode = 1)
+    #   -DenyDriverHash    Authenticode SHA-256 digests to treat as vulnerable, on top of the built-in table
+    #   -AllowDriverHash   digests never reported: an exact driver build you vouch for
+    #   (tools\pe_authentihash.py prints the digest of a driver file)
+    [switch]$LockMode,
+
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string[]]$DenyDriverHash,
+
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string[]]$AllowDriverHash,
+
     [switch]$SkipBuild,
     [switch]$SkipSign
 )
@@ -235,6 +250,15 @@ function Show-Status {
         $imgPath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$DriverName" `
                        -Name ImagePath -ErrorAction SilentlyContinue).ImagePath
         if ($imgPath) { Write-Host "  Binary  : $imgPath" -ForegroundColor DarkGray }
+
+        # Driver-load guard policy (Module 3.4); StrictMode forbids reading a property that is not there.
+        $guard = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$DriverName\Parameters" `
+                     -ErrorAction SilentlyContinue
+        $lockOn = $guard -and $guard.PSObject.Properties['LockMode'] -and $guard.LockMode -eq 1
+        $nDeny  = if ($guard -and $guard.PSObject.Properties['DriverDenyHashes'])  { @($guard.DriverDenyHashes).Count }  else { 0 }
+        $nAllow = if ($guard -and $guard.PSObject.Properties['DriverAllowHashes']) { @($guard.DriverAllowHashes).Count } else { 0 }
+        Write-Host ("  Driver-load guard : lock mode {0}, {1} operator deny digest(s), {2} allow digest(s)" -f `
+                    $(if ($lockOn) { 'ON' } else { 'off' }), $nDeny, $nAllow) -ForegroundColor DarkGray
     } else {
         Write-Warn "Service '$DriverName' is not registered."
     }
@@ -337,6 +361,29 @@ function Invoke-Install {
         default {
             Remove-ItemProperty -Path $paramKey -Name 'Enforce' -ErrorAction SilentlyContinue
             Write-Ok 'Enforcement: automatic (on for bare metal, off under a hypervisor).'
+        }
+    }
+
+    # ── Driver-load guard policy, read by the driver when it loads ────────────
+    if ($PSBoundParameters.ContainsKey('LockMode')) {
+        if ($LockMode) {
+            Set-ItemProperty -Path $paramKey -Name 'LockMode' -Value 1 -Type DWord
+            Write-Warn 'Lock mode ON (Parameters\LockMode = 1): every driver that appears after start is reported.'
+        } else {
+            Remove-ItemProperty -Path $paramKey -Name 'LockMode' -ErrorAction SilentlyContinue
+            Write-Ok 'Lock mode off.'
+        }
+    }
+    foreach ($list in @(@('DriverDenyHashes', 'DenyDriverHash'), @('DriverAllowHashes', 'AllowDriverHash'))) {
+        $valueName, $paramName = $list
+        if (-not $PSBoundParameters.ContainsKey($paramName)) { continue }
+        $digests = @($PSBoundParameters[$paramName] | ForEach-Object { $_.ToLowerInvariant() })
+        if ($digests.Count -gt 0) {
+            Set-ItemProperty -Path $paramKey -Name $valueName -Value ([string[]]$digests) -Type MultiString
+            Write-Ok "Parameters\$valueName: $($digests.Count) digest(s)."
+        } else {
+            Remove-ItemProperty -Path $paramKey -Name $valueName -ErrorAction SilentlyContinue
+            Write-Ok "Parameters\$valueName cleared."
         }
     }
 

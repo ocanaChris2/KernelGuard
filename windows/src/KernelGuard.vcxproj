@@ -184,6 +184,9 @@
     <ClCompile Include="pmu_detection.c" />
     <ClCompile Include="hw_keylogger_detect.c" />
     <ClCompile Include="kernel_integrity.c" />
+    <ClCompile Include="driver_load_guard.c" />
+    <ClCompile Include="pe_authenticode.c" />
+    <ClCompile Include="digest_table.c" />
     <ClCompile Include="cache_mitigation.c" />
     <ClCompile Include="secure_comms.c" />
   </ItemGroup>

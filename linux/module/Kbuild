@@ -4,7 +4,7 @@
 
 obj-m := kernelguard.o
 
-kernelguard-y := kg_main.o kg_state.o kg_comms.o kg_mitigate.o kg_posture.o kg_integrity.o kg_pmu.o kg_hw.o kg_input.o
+kernelguard-y := kg_main.o kg_state.o kg_comms.o kg_mitigate.o kg_posture.o kg_modgate.o kg_integrity.o kg_pmu.o kg_hw.o kg_input.o
 
 ccflags-y := -I$(src) -I$(src)/../include
 

@@ -5,8 +5,12 @@ move up. A gate is something you can check, not a feeling. Items marked *(done)*
 
 ## Stage 0: lab (where the project is)
 
-- *(done)* Linux module, `kgmon`, deploy scripts and a 13-suite QEMU/KVM test rig (328 checks); the module builds
+- *(done)* Linux module, `kgmon`, deploy scripts and a 14-suite QEMU/KVM test rig (483 checks); the module builds
   warning-free on kernels 6.8 to 7.0.
+- *(done)* Bring-your-own-vulnerable-driver mitigation: Linux refuses a listed module while enforcing (tested end to
+  end in QEMU); the Windows driver reports a listed driver by its Authenticode digest and audits HVCI and the
+  Microsoft blocklist (the digest code is tested on Linux against real signatures; the driver code is
+  compile-checked only, and cannot refuse a load).
 - *(done)* Graduated response and an escalation policy on Linux, both tested end to end in QEMU.
 - *(done)* Continuous-integration workflows written and linted (lint, Linux build and QEMU tests, CodeQL, release).
   **None has run on GitHub yet.**
@@ -49,6 +53,12 @@ To stay: one patch cycle (kernel update, Windows hotfix) with no unexplained fai
       rollback procedure that has been used once.
 - [ ] A support policy: which OS and kernel versions, how long, how vulnerabilities are handled (see
       [SECURITY.md](SECURITY.md)).
+- [ ] The Windows vulnerable-driver table refreshed on a schedule (`tools/import_loldrivers.py --check` in CI or a
+      release step) and reviewed for drivers the fleet legitimately runs (`DriverAllowHashes`); a Linux deny list
+      built from advisories, since none is published.
+- [ ] Windows: the driver-load guard run on real hardware with a known-vulnerable driver in a VM snapshot, and, if a
+      supported way to refuse a load is wanted, a design for one (a file-system minifilter or ELAM is a separate
+      project; entry-point patching is not an option under HVCI).
 
 ## Beyond
 

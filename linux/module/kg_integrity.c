@@ -840,7 +840,7 @@ static bool kg_module_nb_registered;
  */
 #define KG_MAX_BOOT_MODULES 1024
 
-static void kg_enumerate_modules(void)
+int kg_for_each_live_module(void (*fn)(struct module *mod, void *arg), void *arg)
 {
 	struct module **held;
 	struct module *m;
@@ -848,7 +848,7 @@ static void kg_enumerate_modules(void)
 
 	held = kvcalloc(KG_MAX_BOOT_MODULES, sizeof(*held), GFP_KERNEL);
 	if (!held)
-		return;
+		return -ENOMEM;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(m, &THIS_MODULE->list, list) {
@@ -862,17 +862,29 @@ static void kg_enumerate_modules(void)
 	rcu_read_unlock();
 
 	for (i = 0; i < n; i++) {
-		kg_module_add(held[i]);
+		fn(held[i], arg);
 		module_put(held[i]);
 	}
 	kvfree(held);
+	return 0;
+}
+
+static void kg_module_add_cb(struct module *mod, void *unused)
+{
+	kg_module_add(mod);
+}
+
+static void kg_enumerate_modules(void)
+{
+	kg_for_each_live_module(kg_module_add_cb, NULL);
 }
 
 /*----------------------------------------------------------------------------
  * Periodic worker (Windows: IntegrityWorkerThread)
  *--------------------------------------------------------------------------*/
 static struct delayed_work kg_integ_work;
-static bool kg_integ_stop;
+/* True until kg_integrity_init() has set the work item up, and again after exit (see kg_hw_stop). */
+static bool kg_integ_stop = true;
 static bool kg_state_corrupt_reported;
 
 static void kg_integ_workfn(struct work_struct *w)
@@ -939,8 +951,8 @@ int kg_integrity_init(void)
 		kg_nregions, kg_copy_bytes >> 10, num_online_cpus(),
 		kg_idt_enabled ? ", IDT" : "");
 
-	kg_integ_stop = false;
 	INIT_DELAYED_WORK(&kg_integ_work, kg_integ_workfn);
+	WRITE_ONCE(kg_integ_stop, false);       /* only now may a kick queue it */
 	queue_delayed_work(kg_wq, &kg_integ_work, msecs_to_jiffies(kg_scan_ms(kg_integ_interval_ms)));
 	return 0;
 }

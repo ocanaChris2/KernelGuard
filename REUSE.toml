@@ -16,6 +16,7 @@ SPDX-License-Identifier = "GPL-2.0-only"
 [[annotations]]
 path = [
   "windows/**",
+  "usb/**",
   "build.py",
   "build.sh",
   "build.cmd",
@@ -36,3 +37,11 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 KernelGuard contributors"
 SPDX-License-Identifier = "MIT"
+
+# The driver-load guard's built-in table is generated from the LOLDrivers dataset (Apache-2.0), not written
+# here, so it is the one file under windows/ that is not MIT.  "override" beats the windows/** mapping above.
+[[annotations]]
+path = ["windows/src/vuln_driver_hashes.h"]
+precedence = "override"
+SPDX-FileCopyrightText = "LOLDrivers contributors <https://github.com/magicsword-io/LOLDrivers>"
+SPDX-License-Identifier = "Apache-2.0"
