@@ -127,3 +127,13 @@ check "operator reset switches enforcement off again" sh -c 'kgmon posture set n
 check "rmmod rogue fixture"                rmmod kg_test_rogue
 check "rmmod kernelguard"                  rmmod kernelguard
 check_no_kernel_faults
+
+step "a posture raise with the monitors disabled is harmless (regression: the ladder kicks every monitor)"
+dmesg -c > /dev/null
+check "insmod kernelguard hw=0 integrity=0 input=0 pmu=0" load_kg hw=0 integrity=0 input=0 pmu=0
+inject 0x10 1 0x6f67756572 0
+check "ELEVATED without the PCI and input monitors" wait_for 3 pos_is ELEVATED
+inject 0x20 2 0xffffffff81000000 14
+check "HIGH without the integrity monitor"  wait_for 3 pos_is HIGH
+check "rmmod kernelguard"                  rmmod kernelguard
+check_no_kernel_faults

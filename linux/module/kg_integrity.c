@@ -872,7 +872,8 @@ static void kg_enumerate_modules(void)
  * Periodic worker (Windows: IntegrityWorkerThread)
  *--------------------------------------------------------------------------*/
 static struct delayed_work kg_integ_work;
-static bool kg_integ_stop;
+/* True until kg_integrity_init() has set the work item up, and again after exit (see kg_hw_stop). */
+static bool kg_integ_stop = true;
 static bool kg_state_corrupt_reported;
 
 static void kg_integ_workfn(struct work_struct *w)
@@ -939,7 +940,6 @@ int kg_integrity_init(void)
 		kg_nregions, kg_copy_bytes >> 10, num_online_cpus(),
 		kg_idt_enabled ? ", IDT" : "");
 
-	kg_integ_stop = false;
 	INIT_DELAYED_WORK(&kg_integ_work, kg_integ_workfn);
 	queue_delayed_work(kg_wq, &kg_integ_work, msecs_to_jiffies(kg_scan_ms(kg_integ_interval_ms)));
 	return 0;
@@ -952,6 +952,7 @@ void kg_integrity_exit(void)
 	if (!kg_cpu_base)
 		return;
 
+	WRITE_ONCE(kg_integ_stop, false);       /* only now may a kick queue it */
 	if (kg_module_nb_registered)
 		unregister_module_notifier(&kg_module_nb);
 	WRITE_ONCE(kg_integ_stop, true);
