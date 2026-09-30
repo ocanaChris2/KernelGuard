@@ -50,8 +50,44 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
   `KG_IOC_SET_POSTURE`) and announced with the new alert `POSTURE_CHANGED` (0x0032); `auto_enforce=1` switches
   on active enforcement only once the posture reaches HIGH. New ioctls `KG_IOC_GET_POSTURE` /
   `KG_IOC_SET_POSTURE` leave the existing structures untouched. New QEMU suite `posture` (68 checks).
+- **Bring-your-own-vulnerable-driver (BYOVD) mitigation, both ports.** New alert codes `0x0025 VULN_DRIVER`,
+  `0x0026 DRIVER_BLOCKED` (Linux only) and `0x0027 LOAD_POLICY`; `0x0024 MODULE_LOADED` is now used by both ports.
+  - **Linux: driver-load gate** (`kg_modgate.c`, Module 3.5). A module notifier at `MODULE_STATE_COMING` reports and,
+    while enforcing (`enforce=1`, or `auto_enforce=1` once the posture is HIGH), **refuses** a load with `EPERM`
+    before `init()` runs. `mod_deny=NAME[@SRCVERSION],...` is the deny list (the name and `srcversion` are inside
+    the signed ELF; `mod->build_id` does not exist on distribution kernels); `mod_lock=1` is lock mode (refuse or,
+    without `enforce`, report every module not loaded when the lock was switched on and not in `mod_allow=`);
+    `modgate=0` switches it off. At load it audits `module.sig_enforce`, lockdown and Secure Boot
+    (`LOAD_POLICY`). A denied module that loaded raises the posture to HIGH; a refusal to ELEVATED. New ioctl
+    `KG_IOC_GET_MODGATE`; `kgmon status` shows the gate and the audit. New QEMU suite `modgate` (150 checks).
+  - **Linux: `kgmon modid [--entry] FILE|-`** prints the exact `mod_deny=` entry of a `.ko`, its version, whether a
+    signature is appended, and its SHA-256, from a bounds-checked ELF reader (`kg_modid.c`, unit-tested in
+    `kgmon selftest`; also run ad hoc under AddressSanitizer and UBSan against 300 000 mutated modules).
+  - **Windows: driver-load guard** (`driver_load_guard.c`, Module 3.4) **(unverified on Windows)**. A
+    `PsSetLoadImageNotifyRoutine` callback queues kernel-image paths; a worker thread computes each driver file's
+    **Authenticode SHA-256** (`pe_authenticode.c`) and looks it up in a built-in table generated from
+    [LOLDrivers](https://www.loldrivers.io) (Apache-2.0: 1,874 unique digests from 698 drivers, 2026-09-29) and in
+    `Parameters\DriverDenyHashes` / `DriverAllowHashes`. A listed driver loaded after start (or any *malicious* one)
+    raises `VULN_DRIVER` at level 2 and puts the driver in fail-safe; one already loaded at start is a warning.
+    `Parameters\LockMode` reports every driver that appears after start. At load it audits HVCI, test signing and the
+    Microsoft vulnerable-driver blocklist (`LOAD_POLICY`). **It cannot refuse a load**; prevention there is Code
+    Integrity's blocklist and HVCI. `-LockMode`, `-DenyDriverHash` and `-AllowDriverHash` in `Deploy-KernelGuard.ps1`.
+    The monitor shows the new alerts. The policy block's `Reserved0` became `LockMode` (`KG_POLICY_VERSION` 2).
+  - **Tools:** `tools/import_loldrivers.py` (deterministic; `--check` reports whether the table is out of date),
+    `tools/pe_authentihash.py` (an independent Authenticode digest, and the digest recorded in a signature) and
+    `tools/test_pe_authenticode.py`, which builds `pe_authenticode.c` on Linux and checks it against the digests
+    recorded in real Microsoft signatures (32-bit, 64-bit and ARM64), against the independent implementation, and
+    against hostile input, and `tools/test_digest_table.py` for `digest_table.c` (hex parsing and lookup, tested
+    against the real generated table); both also run under AddressSanitizer and UBSan, and both are in the `lint`
+    workflow.
 
 ### Fixed
+
+- **Linux: raising the posture while a monitor was off touched an uninitialised work item.** The posture ladder
+  kicks the PCI/DMA and integrity monitors on every raise, and both used a stop flag that started out clear, so
+  with `hw=0` or `integrity=0` (or during start-up) the kick queued a work item nobody had initialised: a kernel
+  `WARNING`, and the guest wedged. The flags now start set and are cleared only after the work item exists.
+  Reproduced in the QEMU guest before the fix; the `posture` suite has a regression step.
 
 - **Windows (unverified on Windows):** the keyboard class driver was whitelisted as `Kbclass`; its name is
   `Kbdclass`. **Windows:** the shared-state hash covered counters that change at run time, so the driver entered
@@ -67,6 +103,10 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
 
 ### Changed
 
+- **Linux: every module load now emits one `LOAD_POLICY` alert** (from the driver-load gate's audit), *watch* when
+  `sig_enforce`, lockdown or Secure Boot is off, which is the usual case on a desktop. A policy rule that matches
+  `alert=*` at `level=warning` will therefore fire once per boot; match the alerts you mean. The `monitor` suite
+  now expects that alert in the ring.
 - `linux/monitor/Makefile` no longer loses `-I../include` when `CFLAGS` is given on the command line (every
   distribution build does), which broke `make CFLAGS=...`.
 - `kgmon` no longer ignores `SIGCHLD`: helper processes (desktop notifications, policy actions) are tracked, reaped

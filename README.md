@@ -213,6 +213,61 @@ Three independent sub-systems, all running at `PASSIVE_LEVEL` on a background wo
 
 **Alert codes emitted:** `ALERT_IDT_HOOK`, `ALERT_DISPATCH_HOOK`, `ALERT_TEXT_PATCH`
 
+### Module 3.4 — Driver-load guard (bring your own vulnerable driver)
+
+`windows/src/driver_load_guard.c`, `pe_authenticode.c`, `digest_table.c`, `vuln_driver_hashes.h`
+
+An administrator who wants a kernel read/write primitive can install a driver that is legitimately signed but
+vulnerable (a vendor's hardware utility, typically) and use it to switch off security software or patch the
+kernel. Modules 2 and 3 see what the primitive is used for; this module sees the load itself.
+
+- A `PsSetLoadImageNotifyRoutine` callback keeps kernel-mode images and copies the path into a small queue. It does
+  no file I/O and no hashing: it runs inside the loader.
+- A system thread reads the file and computes its **Authenticode SHA-256**, the digest Code Integrity itself
+  verifies (`pe_authenticode.c`). The file name is not signed and an ordinary file hash changes when a signature is
+  re-encoded; the Authenticode digest is the same for a renamed or re-signed copy, and it is the *Authentihash* the
+  [LOLDrivers](https://www.loldrivers.io) project publishes.
+- The digest is looked up in a built-in table generated from LOLDrivers (`tools/import_loldrivers.py`; 1,874 unique
+  digests from 698 drivers as of 2026-09-29, 123 of them filed as *malicious*) and in the operator's lists. The
+  operator's allow list wins.
+- Drivers already loaded when KernelGuard started are checked in one pass a minute after start.
+
+| Outcome | Alert | Reaction |
+| --- | --- | --- |
+| a listed driver loaded **after** start, or any driver from the *malicious* class | `ALERT_VULN_DRIVER`, level 2 | fail-safe |
+| a listed *vulnerable* driver that was already loaded at start | `ALERT_VULN_DRIVER`, level 1 | warning only: legitimate software installs such drivers at boot |
+| `LockMode = 1` and a driver appeared after start (digest not on the allow list) | `ALERT_MODULE_LOADED`, level 1 | warning |
+| a driver whose file could not be read and hashed after it loaded (deleted, replaced) | `ALERT_MODULE_LOADED`, level 1 | warning |
+| once, at load: HVCI, test signing, the Microsoft vulnerable-driver blocklist | `ALERT_LOAD_POLICY` | level 1 when a defence is off, else level 0 |
+
+**It never refuses a load.** A load-image callback cannot veto one, patching a mapped driver's entry point is racy
+and fails under HVCI, and blocking belongs to Code Integrity: the Microsoft *vulnerable driver blocklist*, which Microsoft
+documents as enabled by default on current Windows 11 and enforced with HVCI (check the documentation for your build; this
+project did not). So the driver audits those and says when they are off.
+State the consequence plainly: by the time a hit is reported the driver's `DriverEntry` may already have run; what
+KernelGuard adds is that the load is no longer silent and a critical hit puts the rest of the driver into fail-safe.
+The Linux port, which can veto a module load, refuses it (see [linux/README.md](linux/README.md)).
+
+Registry values under `HKLM\SYSTEM\CurrentControlSet\Services\KernelGuard\Parameters` (or the deploy switches
+`-LockMode`, `-DenyDriverHash`, `-AllowDriverHash`; `tools/pe_authentihash.py FILE.sys` prints a driver's digest):
+
+| Value | Type | Meaning |
+| --- | --- | --- |
+| `LockMode` | `REG_DWORD` | `1`: also report every driver that appears after start. Part of the hashed policy block |
+| `DriverDenyHashes` | `REG_MULTI_SZ` | 64-hex-digit Authenticode SHA-256 digests to treat as vulnerable, on top of the built-in table |
+| `DriverAllowHashes` | `REG_MULTI_SZ` | digests never reported: an exact driver build you vouch for (a vendor tool that ships a listed driver) |
+
+The built-in table is a snapshot of the LOLDrivers dataset (Apache License 2.0, © LOLDrivers contributors,
+[github.com/magicsword-io/LOLDrivers](https://github.com/magicsword-io/LOLDrivers); text in `LICENSES/Apache-2.0.txt`).
+`tools/import_loldrivers.py --check` says whether it is out of date; regenerate it with the same tool.
+
+**Verification status.** The digest code is built on Linux and checked (`tools/test_pe_authenticode.py`) against the
+digest recorded inside real Microsoft signatures for 32-bit, 64-bit and ARM64 images, against an independent
+implementation, and against thousands of hostile headers; the table parsing and lookup (`digest_table.c`) is checked
+against the real generated table (`tools/test_digest_table.py`). The kernel side (callback, queue, worker, registry
+lists, audit) only **compiles** against the 10.0.26100 WDK headers (`tools/wdk_syntax_check.py`); it has **never been
+built with MSBuild or run on Windows**. Try it in a VM snapshot first.
+
 ### Module 4 — Crypto-Agnostic Memory & Cache Mitigation (Core Engine)
 
 `windows/src/cache_mitigation.c`
@@ -550,6 +605,10 @@ KernelGuard/
 │   │   ├── pmu_detection.c                   Module 1: PMU config, PmiIsr, RDTSC profiling
 │   │   ├── hw_keylogger_detect.c             Module 2: PCIe ECAM walk, IOMMU/VT-d check
 │   │   ├── kernel_integrity.c                Module 3: IDT check, dispatch hooks, .text hash
+│   │   ├── driver_load_guard.c               Module 3.4: load-image callback, driver digest lookup, load-policy audit
+│   │   ├── pe_authenticode.c / .h            Authenticode digest of a PE image (no kernel types; tested on Linux)
+│   │   ├── digest_table.c / .h               Reading a digest from hex and finding it in a table (no kernel types; tested on Linux)
+│   │   ├── vuln_driver_hashes.h              GENERATED from LOLDrivers (Apache-2.0): known-vulnerable driver digests
 │   │   ├── cache_mitigation.c                Module 4: VERW/L1D flush, CAT, SMT, sens-page API
 │   │   ├── secure_comms.c                    Module 5: HMAC shared memory, MSR covert channel
 │   │   ├── asm/
@@ -574,7 +633,8 @@ KernelGuard/
 │
 ├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
 ├── kgbuild/                                  Code behind build.py: linux.py and windows.py, plus the shared flow
-├── tools/                                    version.py (VERSION and its copies), changelog_notes.py, wdk_syntax_check.py
+├── tools/                                    version.py, changelog_notes.py, wdk_syntax_check.py, import_loldrivers.py,
+│                                             pe_authentihash.py, test_pe_authenticode.py, test_digest_table.py
 ├── docs/THREAT_MODEL.md                      Assets, adversaries, assumptions, coverage, non-goals
 ├── ROADMAP.md, CHANGELOG.md                  Stages and gates; what changed
 ├── SECURITY.md, CONTRIBUTING.md              Reporting a vulnerability; how to work on it
@@ -713,7 +773,7 @@ This is new and **has not been built or run on Windows**; it compiles against th
 
 ### Event log
 
-The monitor writes every alert to the Windows **Application** log, source `KernelGuard` (registered by the deploy script). Event IDs: `900` monitor started, `901` stopped, `902` driver not found, `1000 + alert code` for alerts (for example `1022` for `ALERT_TEXT_PATCH`), `1999` for a notification that failed HMAC verification (the event says only that, not what the notification claimed). Level 2 alerts and forged notifications are logged as *Error*, level 1 as *Warning*, the rest as *Information*. Without the source registered the events are still recorded, but Event Viewer adds a note that the description cannot be found.
+The monitor writes every alert to the Windows **Application** log, source `KernelGuard` (registered by the deploy script). Event IDs: `900` monitor started, `901` stopped, `902` driver not found, `1000 + alert code` for alerts (for example `1022` for `ALERT_TEXT_PATCH`, `1037` for `ALERT_VULN_DRIVER`), `1999` for a notification that failed HMAC verification (the event says only that, not what the notification claimed). Level 2 alerts and forged notifications are logged as *Error*, level 1 as *Warning*, the rest as *Information*. Without the source registered the events are still recorded, but Event Viewer adds a note that the description cannot be found.
 
 ```powershell
 Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'KernelGuard' } -MaxEvents 20
@@ -726,7 +786,7 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Kernel
 3. **Sign** (unless `-SkipSign`) — creates or reuses a `CN=KernelGuard Test Signing` self-signed certificate in `Cert:\CurrentUser\My`, installs it into `LocalMachine\Root` and `LocalMachine\TrustedPublisher`, then calls `signtool sign /fd sha256`.
 4. **Stop old instance** — terminates the monitor process and stops/removes any existing service.
 5. **Deploy binary** — copies the signed `.sys` to `%SystemRoot%\system32\drivers\`, verifies the installed copy's signature.
-6. **Register service** — writes service registry entries directly under `HKLM\...\Services\KernelGuard` (avoids `sc.exe` pending-deletion races), the `Parameters\Enforce` policy value, and the `KernelGuard` event log source.
+6. **Register service** — writes service registry entries directly under `HKLM\...\Services\KernelGuard` (avoids `sc.exe` pending-deletion races), the `Parameters\Enforce` policy value (and, when you pass `-LockMode`, `-DenyDriverHash` or `-AllowDriverHash`, the driver-load guard's values), and the `KernelGuard` event log source.
 7. **Load driver** — `sc start KernelGuard`.
 8. **Launch monitor** — starts `KernelGuardMonitor.exe`.
 
@@ -792,6 +852,10 @@ typedef struct _SECURE_NOTIFICATION {
 | `ALERT_IDT_HOOK` | `0x0020` | M3 | IDT handler points outside ntoskrnl/HAL range |
 | `ALERT_DISPATCH_HOOK` | `0x0021` | M3 | Keyboard driver `IRP_MJ_READ` prologue matches hook pattern |
 | `ALERT_TEXT_PATCH` | `0x0022` | M3 | Kernel `.text` SHA-256 hash mismatch against baseline |
+| `ALERT_MODULE_LOADED` | `0x0024` | M3.4 | Lock mode: a driver appeared after start; or a driver's file could not be read and hashed. Param1/2 = driver file name (16 ASCII bytes) |
+| `ALERT_VULN_DRIVER` | `0x0025` | M3.4 | A driver on the built-in or operator deny list is loaded. Level 2 (and fail-safe) when loaded after start or *malicious*; level 1 when already loaded at start |
+| `ALERT_DRIVER_BLOCKED` | `0x0026` | – | Linux only: a module load was refused. The Windows driver cannot refuse a load |
+| `ALERT_LOAD_POLICY` | `0x0027` | M3.4 | Audit of the OS's own driver-load defences. Param1 = weaknesses (`0x100` test signing or code integrity off, `0x200` HVCI off, `0x400` blocklist disabled), Param2 = the raw `CodeIntegrityOptions` word |
 | `ALERT_SHARED_STATE_CORRUPT` | `0x0030` | M4 | `DRIVER_SHARED_STATE` integrity hash mismatch |
 | `ALERT_FAIL_SAFE_ENTERED` | `0x0031` | M4 | Driver entered fail-safe mode (max mitigations applied) |
 
@@ -878,4 +942,5 @@ Every user-controlled index used to access an array goes through `SafeArrayIndex
 | False-positive `.text` mismatch | Windows Update or EDR products that patch kernel modules after driver load will trigger `ALERT_TEXT_PATCH` and enter fail-safe mode (maximum overhead). |
 | Multi-socket / NUMA | PMU and CAT configuration runs per logical CPU via IPI; cross-socket CAT topology is not verified. |
 | AMD support | MSR addresses and CPUID leaf handling target Intel SDM. AMD equivalents (`MSR_AMD_VIRT_SPEC_CTRL` 0xC0011F00) are defined but not fully exercised. |
+| **Driver-load guard cannot refuse** | It reports a listed driver (and enters fail-safe for one loaded after start); it cannot stop the load. Prevention is the Microsoft vulnerable-driver blocklist and HVCI, which it audits. `DriverEntry` may already have run when the report arrives. A vulnerable driver that is on no list, one loaded before KernelGuard's boot-start slot (found by the start pass, at warning level) and one whose file is deleted before it is read (reported as unreadable) are not caught as vulnerable. The queue holds 64 paths; overflow is counted and logged, not reported. Never built or run on Windows |
 | Test signing only | The deploy script creates a self-signed test certificate. A production deployment requires a Microsoft-issued EV code-signing certificate and WHQL submission. |

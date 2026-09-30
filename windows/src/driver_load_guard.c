@@ -35,8 +35,9 @@
 // -------------------
 //   It never refuses a load.  A load-image callback cannot veto one, patching the entry point of a driver
 //   that is already mapped is racy and fails under HVCI, and blocking belongs to Code Integrity: the
-//   Microsoft vulnerable-driver blocklist, which is on by default on current Windows 11 and enforced with
-//   HVCI.  So the driver AUDITS that instead (ALERT_LOAD_POLICY: HVCI, test signing, the blocklist's
+//   Microsoft vulnerable-driver blocklist, which Microsoft documents as enabled by default on current
+//   Windows 11 and enforced with HVCI (not checked here: read the current documentation for your build).
+//   So the driver AUDITS that instead (ALERT_LOAD_POLICY: HVCI, test signing, the blocklist's
 //   registry switch) and tells the operator when it is weak.  The consequence to state plainly: by the time
 //   a hit is reported the driver's DriverEntry may already have run.  What KernelGuard adds is that the
 //   load is no longer silent, and that a critical hit puts the rest of the driver into fail-safe.

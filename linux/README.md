@@ -89,6 +89,7 @@ from two perf counters per CPU, and taints the kernel (out-of-tree + unsigned un
 | **M3 dispatch hooks** | 6 prologue byte patterns | Handler callbacks must resolve to a symbol in the **same module as their handler**; entry must not `JMP`/`PUSH-RET`/`MOV-JMP` into a *different* module | Prologue bytes alone false-positive on `endbr64`/`__fentry__`/kprobes |
 | **M3 `.text`** | SHA-256 per module, compared constant-time | **Baseline copy** + classification of every difference (see below), kernel image *and* all modules | Linux kernel text legitimately self-modifies (jump labels, ftrace, static calls, kprobes); a plain hash would fire the first time anyone runs `perf` |
 | **M3 module loads** | (mentioned in comments, never done) | `register_module_notifier`: baselines follow modules; every load is reported (unsigned ⇒ warning) | — |
+| **M3.5 driver-load gate** (bring your own vulnerable driver) | `driver_load_guard.c`: identifies a driver by its Authenticode SHA-256 against a LOLDrivers-derived table and the operator's lists, reports it, enters fail-safe; audits HVCI, test signing and the Microsoft blocklist. **Cannot refuse** a load | [`kg_modgate.c`](#module-35--driver-load-gate-kg_modgatec): identifies a module by name (and `srcversion`), **refuses** it at `MODULE_STATE_COMING` when enforcing, lock mode, audits `sig_enforce` / lockdown / Secure Boot | A load-image callback cannot veto a driver, but a module notifier can veto a module. A Windows file name is not signed; a module's name is |
 | **M4 strategy** | `ARCH_CAPABILITIES` bits | The kernel's own `X86_BUG_*` determination (covers CPUs identified by model) | The Windows header aliases `L1TF_NO` and `SSB_NO` to bit 4 and never sets `CPU_FEAT_IBPB` |
 | **M4 `VERW`** | MASM routine, selector `0x2B` | Inline `verw` (memory operand) with `__KERNEL_DS` | same instruction; the memory form is the one documented to clear buffers |
 | **M4 `SPEC_CTRL`** | Sets/clears IBRS/STIBP | **Never written.** Escalation uses one-shot IBPB | The kernel caches and rewrites it per CPU/task; clearing bit 0 on an eIBRS CPU silently weakens the whole system |
@@ -277,6 +278,58 @@ Every raise is bounded by `max_posture`; see [Graduated response](#graduated-res
    (`ALERT_MODULE_LOADED`, *watch* if unsigned).
 5. **Policy-state hash** verification (Module 4's table).
 
+### Module 3.5 — driver-load gate (`kg_modgate.c`)
+
+The other half of *bring your own vulnerable driver*: somebody with root loads a module that is legitimately
+signed but vulnerable, to get a kernel read/write primitive that lockdown and module signing were meant to deny
+them. The rest of Module 3 only sees what the primitive is used for afterwards (a patched IDT, a cleared
+`CR0.WP`); this part sees the load.
+
+A module notifier at the highest priority sees every module at `MODULE_STATE_COMING`: laid out, signature
+checked, taints and `srcversion` known, `init()` not yet run. A notifier that returns an error there aborts the
+load (the loader hands the errno back to `finit_module()` / `init_module()`), so the gate can **refuse**, not
+only report. Three things are decided:
+
+| Piece | What it does |
+| --- | --- |
+| **Deny list** `mod_deny=NAME[@SRCVERSION],…` | A module whose name (and, when given, `srcversion`) matches is a hit. Matching is exact and case-insensitive for the srcversion; `-` and `_` are the same in a name. `kgmon modid FILE.ko` prints the exact entry for a module file |
+| **Lock mode** `mod_lock=1` (writable) | Every module that was not loaded when the lock was switched on, and is not in `mod_allow=`, is unexpected. For kiosks and shared machines. It breaks on-demand hardware drivers (a USB stick loads `usb_storage`), so it is off by default, and without `enforce` it is a dry run that only reports |
+| **Audit** (`ALERT_LOAD_POLICY`) | Once at load: is `module.sig_enforce` on, does lockdown restrict unsigned modules, was the machine booted with Secure Boot. Those defences, not this module, are what really prevent the attack; `kgmon status` shows the result |
+
+What a hit does depends on `kg_enforcing()` (`enforce=1`, or `auto_enforce=1` once the posture is HIGH, so a
+system running `auto_enforce` closes the gate by itself after its first incident):
+
+| Situation | Detect-only (default) | Enforcing |
+| --- | --- | --- |
+| deny-list hit | the module loads; `VULN_DRIVER` (critical); posture → HIGH, because the primitive now exists | refused with `EPERM` before `init()` runs; `DRIVER_BLOCKED` (critical); posture → ELEVATED: an attempt was stopped, and someone with root made it |
+| lock-mode violation | the module loads; `MODULE_LOADED` at *watch*, and a log line saying it is a dry run | refused; `DRIVER_BLOCKED` at *watch*; the posture does not move, so a USB hot-plug is not an incident |
+| deny-list hit among modules **already loaded** when KernelGuard started | `VULN_DRIVER` at *watch* (too late to refuse it); posture → ELEVATED | the same |
+
+**Why the identity is the name and not a hash.** A notifier is handed the loaded `struct module`, not the file,
+and the loaded text is relocated and patched, so it has no stable hash. `mod->build_id` would identify a build,
+but it is compiled out of the distribution kernels this project targets (`CONFIG_STACKTRACE_BUILD_ID` is unset).
+The name and the `srcversion` are strings inside the signed ELF, so with signature enforcement on a signed
+vulnerable module cannot be renamed around the list. Without enforced signatures an attacker does not need a
+vulnerable module at all, which is why the audit reports it. The Windows driver has to match a hash instead,
+because a Windows driver's file name is not signed.
+
+Details worth knowing when reading the counters and the log:
+
+- The kernel answers a load that overlaps another load of the **same module name** with `EBUSY` or `EEXIST`
+  before any notifier runs. The attempt that does run is judged, so nothing gets through, but the counters count
+  judged loads, not system calls.
+- BusyBox `insmod` retries a failed `finit_module` with `init_module`, so one refused `insmod` shows up twice.
+  kmod's `insmod` and `modprobe` call the loader once. The test suite uses a one-call helper (`modload`) for
+  its counting checks and exercises both system calls.
+- The deny and allow lists are load-time only (`0444`, at most 64 entries each, malformed entries are skipped
+  and counted, never fatal). `mod_lock`, like `enforce`, is a root-writable switch: **root can undo the gate**,
+  by writing `enforce=0` or `mod_lock=0` or by unloading the module.
+- On a locked-down system the audit's lockdown probe makes the lockdown LSM log one
+  `Lockdown: insmod: unsigned module loading is restricted` notice when `kernelguard` loads. That line is the
+  probe, not an event.
+- `mod_lock` records the modules that are loaded at the moment it is switched on; if that cannot be done
+  (out of memory) the switch is refused rather than leaving a lock with an empty baseline.
+
 ### Module 4 — mitigation engine (`kg_mitigate.c`)
 
 - **Probe** on each CPU (via `cpuhp`, so hot-added CPUs are covered): `ARCH_CAPABILITIES`, `MD_CLEAR`,
@@ -394,12 +447,14 @@ linux/
 │   ├── kg_hw.c                    Module 2, PCI/DMA                                     (hw_keylogger_detect.c)
 │   ├── kg_input.c                 Module 2 keyboard path + Module 3 input hooks         (…, kernel_integrity.c)
 │   ├── kg_integrity.c             Module 3                                              (kernel_integrity.c)
+│   ├── kg_modgate.c               Module 3.5, driver-load gate (bring your own vulnerable driver)  (driver_load_guard.c)
 │   ├── kg_mitigate.c              Module 4                                              (cache_mitigation.c, verw_flush.asm)
 │   ├── kg_comms.c                 Module 5                                              (secure_comms.c)
 │   └── Kbuild, Makefile
 ├── monitor/                       kgmon                                                  (usermode/)
 │   ├── kgmon.c, kg_hmac.c/.h      monitor + self-contained SHA-256/HMAC
 │   ├── kg_policy.c/.h             escalation policy engine (parser, incidents, escalation; unit-tested)
+│   ├── kg_modid.c/.h              reads a module's name and srcversion from its .ko (`kgmon modid`; unit-tested)
 │   └── Makefile
 ├── scripts/
 │   ├── kg-deploy.sh               preflight / build / sign / install / persist          (Deploy-KernelGuard.ps1)
@@ -512,8 +567,10 @@ kgmon posture               the response posture, what raised it, the effective 
 kgmon posture set LEVEL     (root) step it: normal | elevated | high | failsafe
 kgmon ack                   acknowledge the alerts seen so far (see Escalation policy)
 kgmon policy check [FILE]   validate an escalation policy and exit
+kgmon modid [--entry] FILE  the mod_deny= entry (NAME@SRCVERSION) of a .ko file, its version, whether it carries
+                            a signature and its SHA-256; FILE may be - for standard input (.ko.zst: zstd -dc x | kgmon modid -)
 kgmon --policy FILE | --no-policy   the escalation policy (default /etc/kernelguard/policy.conf when present)
-kgmon selftest              SHA-256 / HMAC known-answer tests and the escalation-engine unit tests
+kgmon selftest             SHA-256 / HMAC known-answer tests, the escalation-engine and module-file parser unit tests
 kgmon run --sensitive -- CMD...
                             exec CMD with L1D flush, IBPB/STIBP, SSBD and core scheduling enabled where
                             the kernel supports them (each control reports enabled / why not)
@@ -642,7 +699,8 @@ lapped. (Under a four-writer flood with a live reader the suite saw zero HMAC fa
 
 ### Alert codes
 
-Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` and `0x0032` are Linux additions.
+Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` and `0x0032` are Linux additions; `0x0025–0x0027`
+(the driver-load gate) are new to both ports and share their numbers.
 
 | Code | Value | Module | Param1 / Param2 |
 | --- | --- | --- | --- |
@@ -659,7 +717,10 @@ Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` and `0x0032` 
 | `ALERT_DISPATCH_HOOK` | `0x0021` | M3 | callback address / `kind<<32` (1 unknown memory, 2 foreign module, 3 detour to foreign module, 4 detour to unknown code, 5 int3) |
 | `ALERT_TEXT_PATCH` | `0x0022` | M3 | address / `flags<<32 \| length` (`1` kernel, `2` unknown target, `4` int3) |
 | `ALERT_CTRL_REG_TAMPER` | `0x0023` | M3 | `cpu<<32 \| register` / new value (register = MSR number, `0x10000000` CR0, `0x10000004` CR4) |
-| `ALERT_MODULE_LOADED` | `0x0024` | M3 | module name, bytes 0–7 / 8–15 |
+| `ALERT_MODULE_LOADED` | `0x0024` | M3 | module name, bytes 0–7 / 8–15 (also a lock-mode dry run) |
+| `ALERT_VULN_DRIVER` | `0x0025` | M3.5 | module name, bytes 0–7 / 8–15. Critical when a denied module loaded, *watch* when it was already loaded at start |
+| `ALERT_DRIVER_BLOCKED` | `0x0026` | M3.5 | module name. A load was refused: critical for a deny-list hit, *watch* for lock mode. Linux only |
+| `ALERT_LOAD_POLICY` | `0x0027` | M3.5 | weaknesses / raw state. Weaknesses: `1` `sig_enforce` off, `2` lockdown does not restrict unsigned modules, `4` no Secure Boot. Raw state: `1` `sig_enforce`, `2` lockdown, `4` Secure Boot, `8` signing built in. *Info* when nothing is weak, else *watch*; emitted once per module load |
 | `ALERT_SHARED_STATE_CORRUPT` | `0x0030` | M4 | 0 / 0 |
 | `ALERT_FAIL_SAFE_ENTERED` | `0x0031` | M4 | 0 / 0 |
 | `ALERT_POSTURE_CHANGED` | `0x0032` | M4 | `old<<32 \| new` posture / `why<<32 \| trigger alert` (why: 2 decay, 3 operator). Only decay and operator changes are announced; an automatic raise is already explained by the alert that caused it |
@@ -678,6 +739,7 @@ Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` and `0x0032` 
 | `ioctl(KG_IOC_GET_INFO, struct kg_info *)` | version, flags, counters |
 | `ioctl(KG_IOC_GET_CPU_INFO, struct kg_cpu_info *)` | per-CPU features, strategy, CAT plan (`cpu` clamped with `array_index_nospec`) |
 | `ioctl(KG_IOC_GET_POSTURE, struct kg_posture_info *)` | posture, ceiling, decay time, last trigger, effective scan intervals, times each posture was entered |
+| `ioctl(KG_IOC_GET_MODGATE, struct kg_modgate_info *)` | the gate: active / lock / enforcing flags, list sizes, lock baseline size, counters (denied, refused, lock hits, ignored parameter entries), the load-time audit result |
 | `ioctl(KG_IOC_SET_POSTURE, struct kg_posture_req *)` | set the posture (`CAP_SYS_ADMIN`); refused with `EUCLEAN` when stepping down from HIGH/FAIL-SAFE after the policy state was found corrupted |
 
 ---
@@ -697,6 +759,10 @@ Runtime-writable ones live in `/sys/module/kernelguard/parameters/`.
 | `hw_interval_ms` | `5000` | yes | PCI and keyboard-path re-scan interval (÷4 while ELEVATED or above) |
 | `integrity_interval_ms` | `30000` | yes | Module 3 verification interval (÷4 while ELEVATED or above) |
 | `pmu`, `hw`, `input`, `integrity` | `1` | no | enable each monitor |
+| `modgate` | `1` | no | enable the driver-load gate and its load-policy audit |
+| `mod_deny` | – | no | known-vulnerable modules, comma separated `NAME` or `NAME@SRCVERSION` (at most 64; `kgmon modid FILE.ko` prints one) |
+| `mod_allow` | – | no | module names lock mode lets through besides those loaded when the lock was switched on (at most 64) |
+| `mod_lock` | `0` | yes | lock mode: report (dry run) or, while enforcing, refuse every module that is neither loaded now nor in `mod_allow` |
 | `pmu_period_l1d` / `pmu_period_llc` | `100000` / `20000` | no | events per counter overflow (min 1000) |
 | `pmu_window_ms` | `1000` | yes | sampling window (min 100) |
 | `pmu_warn` / `pmu_crit` | `500` / `2000` | yes | overflows/second per CPU for *watch* / *critical* |
@@ -739,9 +805,9 @@ KG_KVER=6.14.0-29-generic KG_KERNEL=/boot/vmlinuz-6.14.0-29-generic linux/tests/
 Distro images are often root-only; `apt-get download linux-image-$(uname -r)` and `dpkg-deb -x` give a
 readable copy (set `KG_KERNEL`). Tools: `qemu-system-x86_64`, `busybox`, `cpio`, `gcc`.
 
-**Result:** all 13 suites (328 checks) pass on a **7.0.0-31-generic** guest (re-run after the graduated-response
-change; the previous 11 suites also passed on 6.14.0-29), and the module builds warning-free (`W=1`) against every
-installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` reports no errors in the changed files.
+**Result:** all 14 suites (483 checks) pass on a **7.0.0-31-generic** guest (re-run after the driver-load gate; the
+suites that existed before the graduated-response change also passed on 6.14.0-29), and the module builds
+warning-free (`W=1`) against every installed header tree (two 6.8, two 6.14, 6.17, two 7.0).
 
 | Suite | Covers |
 | --- | --- |
@@ -757,6 +823,7 @@ installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` report
 | `lifecycle` | 16 load/unload cycles with a flat-memory slope check, cpuhp states released, hostile parameters, unload while PMU NMIs + tracing + keyboard events + an alert flood are running |
 | `posture` | automatic raises and the 4× scan rate; decay and its restart on a new trigger; HIGH holds every CPU at full-spectrum past several PMU windows; operator step-down restores the baseline and keeps the state hash valid; the `max_posture` cap (also at run time); a corrupted state cannot be reset away; `auto_enforce` detaches a rogue handler only once the posture reaches HIGH; every announcement authenticated |
 | `escalate` | policy validation (line numbers, writable file or program refused); level filter; base action with the right environment and none of the caller's; throttle; escalation by repetition and by age; `ack`; a repeat after an ack is a new incident; an overrunning action and its child killed at the timeout; no zombies; `--once` runs nothing; a notification with a wrong HMAC only raises `FORGED` and never matches its content; a broken policy stops the monitor; `sd_notify` READY/WATCHDOG/STOPPING |
+| `modgate` | the driver-load gate: detect-only reporting and the posture each outcome causes; `NAME@SRCVERSION` identity (match, mismatch, case, dashes, prefixes); refusal under `enforce=1` before `init()` runs, through both `finit_module` and `init_module`; 200 refusals leave no text region or fault behind; concurrent loads never let the denied module through; lock mode (baseline, allow list, dry run, run-time switch); `auto_enforce` closing the gate after an incident; the `max_posture` cap; `modgate=0`; hostile parameter strings; the load-policy audit against the kernel's own `sig_enforce`; `kgmon modid` against what the kernel reports and `sha256sum` |
 | `stress` | 4 concurrent alert writers vs. a live reader: zero HMAC failures, zero torn slots |
 
 **Fuzzing.** `make -C linux/monitor fuzz` builds the escalation policy parser and engine with AddressSanitizer and
@@ -766,8 +833,10 @@ the standalone run. The kernel-facing surface (`ioctl`, `mmap`) is small and is 
 description for it is on the [roadmap](../ROADMAP.md).
 
 Fixtures (`tests/vm/testmods/`): a rogue input handler and a tamper module (patches module/kernel text through
-a temporary writable alias, changes `MSR_CSTAR`, clears `CR0.WP` on one CPU, raises an IDT gate's DPL). They
-exist only in the guest.
+a temporary writable alias, changes `MSR_CSTAR`, clears `CR0.WP` on one CPU, raises an IDT gate's DPL), and two
+inert modules for the driver-load gate: `kg_test_stub` stands in for the vulnerable module (it only logs, which
+is how the suite proves a refused load never reached `init()`) and `kg_test_other` is the bystander. They exist
+only in the guest. The guest helper `modload` loads a module with exactly one `finit_module` or `init_module` call.
 
 **Not covered — be aware:** real hardware (including D3cold devices, hybrid CPUs, AMD, a real IOMMU with
 Thunderbolt), Secure Boot loading, distro kernels other than 7.0.0-31 and 6.14.0-29 at runtime (6.8 and 6.17
@@ -809,6 +878,7 @@ are compile-checked only), and long-running behaviour. Power-off handling of D3c
 | **AMD** | code paths use generic perf events and `X86_BUG_*`; compiled for both, exercised only on Intel-host KVM guests |
 | **Hybrid CPUs** | generic events resolve per CPU; not exercised |
 | **Hypervisor guests** | the Windows README's VM keyboard-loss problem does not arise in detect-only mode; with `enforce=1` a hypervisor's virtual input handler that is not stock would be detached — use `kbd_allow=` |
+| **Driver-load gate** | Sees only the module loader (not built-in code, kexec, `/dev/mem`, BPF). Cannot refuse a module that was already loaded when it started, only report it. Identity is name and `srcversion`, sound only while signatures are enforced (the audit says whether they are). Ships with **no** deny list: build one from advisories with `kgmon modid`. Lists are load-time only; root can undo the gate (`enforce=0`, `mod_lock=0`, `rmmod`). The strong side of the audit (`sig_enforce`, lockdown and Secure Boot all on) cannot be exercised in the unsigned-module test guest, only the weak side |
 | **Persistence** | `persist` is per kernel; the Debian/DKMS package rebuilds per kernel but its installation has not been tested |
 | **Detached handlers** | `enforce=1` does not re-attach on unload; reload the owning driver or replug the device |
 | **Kernels** | x86-64 only, ≥ 6.4 (`struct module_memory`); compile-checked on 6.8, 6.14, 6.17, 7.0 |
@@ -825,7 +895,11 @@ sudo rmmod kernelguard
 ```
 
 If input stopped working while `enforce=1` was active, an input handler was detached: reload the driver that
-provides it (`sudo modprobe -r NAME && sudo modprobe NAME`) or replug the device. If a module was loaded
+provides it (`sudo modprobe -r NAME && sudo modprobe NAME`) or replug the device. If a hardware driver will not
+load (`modprobe` fails with *Operation not permitted*) while `enforce=1` and `mod_deny=` or `mod_lock=1` are set,
+the driver-load gate refused it: `kernelguard: refused to load NAME` is in the kernel log. Open the gate without
+unloading anything with `echo 0 | sudo tee /sys/module/kernelguard/parameters/enforce` (and `.../mod_lock`), then
+load the module. If a module was loaded
 through `persist` and misbehaves at boot, boot with `module_blacklist=kernelguard` on the kernel command line.
 
 ---
