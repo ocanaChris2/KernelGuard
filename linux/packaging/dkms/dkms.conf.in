@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# DKMS configuration for the KernelGuard Linux module. Rebuilds kernelguard.ko for every installed kernel, so an
+# update does not leave the machine unprotected. Module signing for Secure Boot is done by DKMS with the
+# machine's MOK (see "Secure Boot and module signing" in README.md); nothing is loaded automatically.
+#
+# @VERSION@ is replaced from the VERSION file when the source tree is staged.
+PACKAGE_NAME="kernelguard"
+PACKAGE_VERSION="@VERSION@"
+BUILT_MODULE_NAME[0]="kernelguard"
+BUILT_MODULE_LOCATION[0]="module/"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+MAKE[0]="make -C module KVER=${kernelver}"
+CLEAN="make -C module clean KVER=${kernelver}"
+AUTOINSTALL="yes"

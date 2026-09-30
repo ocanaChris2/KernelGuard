@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kgmon.c - KernelGuard monitor for Linux.
  * Counterpart of windows/usermode/{main,driver_comm,log_window}.c.
@@ -9,13 +9,18 @@
  *
  *   kgmon                  follow alerts (backlog first), verify every HMAC
  *   kgmon status           driver state, per-CPU mitigation table, counters
+ *   kgmon ack              acknowledge the alerts seen so far (escalation policy)
+ *   kgmon policy check     validate an escalation policy file
+ *   kgmon posture [set L]  graduated-response posture: show it, or step it (root)
  *   kgmon selftest         SHA-256 / HMAC-SHA256 known-answer tests
  *   kgmon run --sensitive -- CMD...
  *                          exec CMD with the kernel's native per-task
  *                          mitigations enabled (see cmd_run())
  *
  * Alert delivery: stdout, optional CSV log (same columns as the Windows
- * "Save Log" file), optional syslog, optional desktop notification.
+ * "Save Log" file), optional syslog, optional desktop notification, and an
+ * optional escalation policy (kg_policy.h): actions run when alerts match a
+ * rule, and again when an incident repeats or stays unacknowledged.
  *
  * Protocol (kernelguard_uapi.h): the ring is mapped read-only; slot N%16 holds
  * notification N.  A slot is valid while its magic is KG_NOTIFY_MAGIC and is
@@ -33,15 +38,19 @@
 #include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <syslog.h>
 #include <time.h>
@@ -51,6 +60,7 @@
 
 #include "kernelguard_uapi.h"
 #include "kg_hmac.h"
+#include "kg_policy.h"
 
 _Static_assert(sizeof(struct kg_notification) == 72, "notification layout");
 _Static_assert(offsetof(struct kg_notification, hmac) == KG_HMAC_AUTH_LEN, "hmac offset");
@@ -58,6 +68,11 @@ _Static_assert(sizeof(struct kg_shared_region) == 16 + 72 * KG_NOTIFY_SLOTS, "ri
 
 #define KGMON_VERSION   "1.0.0-linux"
 #define POLL_MS         150         /* Windows POLL_INTERVAL_MS */
+#define DEF_POLICY      "/etc/kernelguard/policy.conf"
+#define DEF_STATE_DIR   "/run/kernelguard"
+#define DEF_ACK_FILE    DEF_STATE_DIR "/ack"
+#define MAX_CHILDREN    32
+#define NOTIFY_TIMEOUT_S 10
 
 /* PIDTYPE_TGID is a kernel-internal enum value; prctl(PR_SCHED_CORE) wants it. */
 #ifndef PIDTYPE_TGID_UAPI
@@ -70,6 +85,9 @@ struct opts {
 	const char *device;
 	const char *logfile;
 	const char *notify_user;
+	const char *policy_file;    /* explicit --policy FILE                      */
+	const char *ack_file;
+	int  no_policy;             /* --no-policy: ignore the default file too    */
 	int  use_syslog;
 	int  use_notify;
 	int  once;                  /* drain backlog then exit                     */
@@ -115,6 +133,30 @@ static const char *strategy_text(uint32_t s)
 	return s < sizeof(n) / sizeof(n[0]) ? n[s] : "?";
 }
 
+static const char *posture_text(uint32_t p)
+{
+	static const char *const n[KG_POSTURE_COUNT] = { "NORMAL", "ELEVATED", "HIGH", "FAIL-SAFE" };
+
+	return p < KG_POSTURE_COUNT ? n[p] : "?";
+}
+
+/* "normal", "elevated", "high", "failsafe" / "fail-safe", or 0-3. */
+static int parse_posture(const char *s)
+{
+	static const struct { const char *name; int v; } t[] = {
+		{ "normal", KG_POSTURE_NORMAL }, { "elevated", KG_POSTURE_ELEVATED },
+		{ "high", KG_POSTURE_HIGH }, { "failsafe", KG_POSTURE_FAILSAFE },
+		{ "fail-safe", KG_POSTURE_FAILSAFE },
+	};
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++)
+		if (!strcasecmp(s, t[i].name))
+			return t[i].v;
+	if (s[0] >= '0' && s[0] < '0' + KG_POSTURE_COUNT && !s[1])
+		return s[0] - '0';
+	return -1;
+}
+
 /* Handler / module names travel in Param1|Param2 as 16 bytes of ASCII. */
 static void unpack_name(uint64_t p1, uint64_t p2, char out[17])
 {
@@ -145,8 +187,17 @@ static const char *alert_text(uint32_t t)
 	case KG_ALERT_MODULE_LOADED:           return "Kernel Module Loaded";
 	case KG_ALERT_SHARED_STATE_CORRUPT:    return "Driver State Corrupted";
 	case KG_ALERT_FAIL_SAFE_ENTERED:       return "CRITICAL: Fail-Safe Mode";
+	case KG_ALERT_POSTURE_CHANGED:         return "Response Posture Changed";
+	case KGP_ALERT_FORGED:                 return "Forged Notification";
+	case KGP_ALERT_OVERRUN:                return "Notifications Lost";
+	case KGP_ALERT_TAMPER:                 return "Ring Tamper Suspected";
 	default:                               return "Unknown Alert";
 	}
+}
+
+static const char *alert_title(uint32_t code)
+{
+	return alert_text(code);
 }
 
 static void format_details(const struct kg_notification *n, char *out, size_t len)
@@ -202,6 +253,11 @@ static void format_details(const struct kg_notification *n, char *out, size_t le
 		snprintf(out, len, "cpu %u  reg 0x%x  new 0x%" PRIx64,
 			 (unsigned)(p1 >> 32), (unsigned)(p1 & 0xffffffffu), p2);
 		break;
+	case KG_ALERT_POSTURE_CHANGED:
+		snprintf(out, len, "%s -> %s  (%s)", posture_text((unsigned)(p1 >> 32)),
+			 posture_text((unsigned)(p1 & 0xffffffffu)),
+			 (p2 >> 32) == KG_POSTURE_WHY_DECAY ? "quiet period elapsed" : "operator request");
+		break;
 	default:
 		snprintf(out, len, "Param1: 0x%" PRIx64 "  Param2: 0x%" PRIx64, p1, p2);
 		break;
@@ -234,12 +290,90 @@ static void csv_field(FILE *f, const char *s)
 	fputc('"', f);
 }
 
+/*
+ * Helper processes (desktop notifications, policy actions) are tracked so they
+ * are reaped, killed with their whole process group when they overrun their
+ * timeout, and never pile up: a flood of alerts cannot fork-bomb the machine.
+ */
+struct child {
+	pid_t pid;                  /* 0 = free slot */
+	time_t deadline;
+	char name[KGP_NAME_LEN];
+};
+static struct child g_children[MAX_CHILDREN];
+
+static time_t mono_s(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec;
+}
+
+static struct child *child_free_slot(void)
+{
+	for (int i = 0; i < MAX_CHILDREN; i++)
+		if (!g_children[i].pid)
+			return &g_children[i];
+	return NULL;
+}
+
+static void child_track(struct child *c, pid_t pid, unsigned timeout_s, const char *name)
+{
+	c->pid = pid;
+	c->deadline = mono_s() + timeout_s;
+	snprintf(c->name, sizeof(c->name), "%s", name);
+}
+
+static void children_reap(int use_syslog)
+{
+	for (int i = 0; i < MAX_CHILDREN; i++) {
+		struct child *c = &g_children[i];
+		int st;
+		pid_t r;
+
+		if (!c->pid)
+			continue;
+		r = waitpid(c->pid, &st, WNOHANG);
+		if (r == c->pid) {
+			if (WIFEXITED(st) && WEXITSTATUS(st) != 0) {
+				fprintf(stderr, "kgmon: %s exited with status %d\n", c->name, WEXITSTATUS(st));
+				if (use_syslog)
+					syslog(LOG_WARNING, "%s exited with status %d", c->name, WEXITSTATUS(st));
+			} else if (WIFSIGNALED(st) && WTERMSIG(st) != SIGKILL) {
+				fprintf(stderr, "kgmon: %s killed by signal %d\n", c->name, WTERMSIG(st));
+			}
+			c->pid = 0;
+		} else if (r < 0 && errno == ECHILD) {
+			c->pid = 0;
+		} else if (mono_s() >= c->deadline) {
+			fprintf(stderr, "kgmon: %s timed out, killing it\n", c->name);
+			if (use_syslog)
+				syslog(LOG_WARNING, "%s timed out and was killed", c->name);
+			kill(-c->pid, SIGKILL);     /* the action leads its own process group */
+			kill(c->pid, SIGKILL);
+			c->deadline = mono_s() + 5; /* reaped on a later pass */
+		}
+	}
+}
+
 static void notify_desktop(const struct opts *o, const char *title, const char *body)
 {
-	pid_t pid = fork();
+	struct child *slot = child_free_slot();
+	pid_t pid;
 
-	if (pid != 0)
-		return;             /* parent (SIGCHLD is ignored, so no zombie) */
+	if (!slot) {
+		fprintf(stderr, "kgmon: too many helper processes running, dropped a desktop notification\n");
+		return;
+	}
+	pid = fork();
+	if (pid < 0)
+		return;
+	if (pid != 0) {
+		child_track(slot, pid, NOTIFY_TIMEOUT_S, "notify-send");
+		return;
+	}
+	setsid();
 
 	if (o->notify_user && geteuid() == 0) {
 		struct passwd *pw = getpwnam(o->notify_user);
@@ -269,7 +403,231 @@ struct sinks {
 	struct opts o;
 	FILE *log;
 	long shown;
+	int have_policy;
+	struct kgp_policy pol;
+	struct kgp_engine eng;
+	struct stat ack_seen;       /* identity of the ack file when last read */
 };
+
+/*----------------------------------------------------------------------------
+ * Escalation policy: running actions
+ *--------------------------------------------------------------------------*/
+static void iso_utc(uint64_t ns, char *buf, size_t len)
+{
+	time_t sec = (time_t)(ns / 1000000000ull);
+	struct tm tm;
+
+	gmtime_r(&sec, &tm);
+	strftime(buf, len, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+
+/* Runs in the forked child: build a minimal environment and exec. */
+static void exec_action(const struct kgp_action *act, const struct kgp_rule *rule,
+			const struct kgp_alert *al, int tier, uint32_t count, long age_s)
+{
+	char host[128] = "", when[40], *env[24], buf[24][KGP_DETAILS_LEN + 32];
+	const char *name = kgp_code_name(al->code);
+	int n = 0;
+	sigset_t none;
+	int nul;
+
+	setsid();
+	signal(SIGPIPE, SIG_DFL);
+	signal(SIGINT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
+	sigemptyset(&none);
+	sigprocmask(SIG_SETMASK, &none, NULL);
+	nul = open("/dev/null", O_RDWR);
+	if (nul >= 0) {
+		dup2(nul, 0);
+		if (nul > 2)
+			close(nul);
+	}
+	dup2(2, 1);                 /* whatever the action prints lands in the journal / stderr */
+
+	gethostname(host, sizeof(host) - 1);
+	iso_utc(al->time_ns, when, sizeof(when));
+
+#define ENV(...) do { snprintf(buf[n], sizeof(buf[n]), __VA_ARGS__); env[n] = buf[n]; n++; } while (0)
+	ENV("PATH=/usr/sbin:/usr/bin:/sbin:/bin");
+	ENV("KG_HOST=%s", host);
+	ENV("KG_RULE=%s", rule->name);
+	ENV("KG_ACTION=%s", act->name);
+	ENV("KG_TIER=%d", tier);
+	ENV("KG_COUNT=%u", count);
+	ENV("KG_AGE_S=%ld", age_s);
+	ENV("KG_ALERT=%s", name ? name : "UNKNOWN");
+	ENV("KG_ALERT_CODE=0x%04x", al->code);
+	ENV("KG_TITLE=%s", alert_title(al->code));
+	ENV("KG_LEVEL=%s", kgp_level_name(al->level));
+	ENV("KG_LEVEL_NUM=%d", al->level);
+	ENV("KG_SEQ=%u", al->seq);
+	ENV("KG_TIME=%s", when);
+	ENV("KG_PARAM1=0x%016" PRIx64, al->param1);
+	ENV("KG_PARAM2=0x%016" PRIx64, al->param2);
+	ENV("KG_DETAILS=%s", al->details);
+#undef ENV
+	env[n] = NULL;
+
+	execve(act->argv[0], act->argv, env);
+	fprintf(stderr, "kgmon: cannot run action %s (%s): %s\n", act->name, act->argv[0], strerror(errno));
+	_exit(127);
+}
+
+static void run_action(void *ctx, const struct kgp_policy *pol, const struct kgp_action *act,
+		       const struct kgp_rule *rule, const struct kgp_alert *al,
+		       int tier, uint32_t count, uint64_t first_s)
+{
+	struct sinks *s = ctx;
+	struct child *slot = child_free_slot();
+	pid_t pid;
+
+	(void)pol;
+	if (!slot) {
+		fprintf(stderr, "kgmon: too many actions running, dropped %s for rule %s\n", act->name, rule->name);
+		if (s->o.use_syslog)
+			syslog(LOG_ERR, "too many actions running, dropped %s for rule %s", act->name, rule->name);
+		return;
+	}
+	if (s->o.use_syslog)
+		syslog(LOG_NOTICE, "%s: running action %s for %s (tier %d, %u occurrence(s))",
+		       rule->name, act->name, kgp_code_name(al->code) ? kgp_code_name(al->code) : "alert",
+		       tier, count);
+
+	fflush(NULL);               /* nothing buffered may be written twice by the child */
+	pid = fork();
+	if (pid < 0) {
+		fprintf(stderr, "kgmon: fork: %s\n", strerror(errno));
+		return;
+	}
+	if (pid == 0)
+		exec_action(act, rule, al, tier, count, (long)(mono_s() - (time_t)first_s));
+	child_track(slot, pid, act->timeout_s, act->name);
+}
+
+static unsigned level_to_policy(uint32_t l)
+{
+	return l >= KG_LEVEL_CRITICAL ? KGP_CRITICAL : l == KG_LEVEL_WATCH ? KGP_WARNING : KGP_INFO;
+}
+
+static void policy_pseudo(struct sinks *s, uint32_t code, int level, uint32_t seq, const char *fmt, ...)
+	__attribute__((format(printf, 5, 6)));
+
+/* Something kgmon itself concluded (forged notification, lost notifications, tampered ring). */
+static void policy_pseudo(struct sinks *s, uint32_t code, int level, uint32_t seq, const char *fmt, ...)
+{
+	struct kgp_alert a;
+	struct timespec now;
+	va_list ap;
+
+	if (!s->have_policy)
+		return;
+	memset(&a, 0, sizeof(a));
+	clock_gettime(CLOCK_REALTIME, &now);
+	a.code = code;
+	a.level = level;
+	a.seq = seq;
+	a.time_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	va_start(ap, fmt);
+	vsnprintf(a.details, sizeof(a.details), fmt, ap);
+	va_end(ap);
+	kgp_alert(&s->eng, (uint64_t)mono_s(), &a, run_action, s);
+}
+
+static void policy_feed(struct sinks *s, const struct kg_notification *n, int hmac_ok, const char *details)
+{
+	struct kgp_alert a;
+
+	if (!s->have_policy)
+		return;
+	if (!hmac_ok) {
+		/* Nothing in a notification that failed authentication may steer an action. */
+		policy_pseudo(s, KGP_ALERT_FORGED, KGP_FORGED, n->sequence,
+			      "notification %u failed HMAC verification", n->sequence);
+		return;
+	}
+	memset(&a, 0, sizeof(a));
+	a.code = n->alert_type;
+	a.level = (int)level_to_policy(n->alert_level);
+	a.seq = n->sequence;
+	a.param1 = n->param1;
+	a.param2 = n->param2;
+	a.time_ns = n->timestamp;
+	snprintf(a.details, sizeof(a.details), "%s", details);
+	kgp_alert(&s->eng, (uint64_t)mono_s(), &a, run_action, s);
+}
+
+/* `kgmon ack` leaves the highest acknowledged sequence number in a root-owned file. */
+static void policy_check_ack(struct sinks *s)
+{
+	const char *path = s->o.ack_file ? s->o.ack_file : DEF_ACK_FILE;
+	struct stat st;
+	FILE *f;
+	unsigned long seq;
+
+	if (stat(path, &st) < 0)
+		return;
+	if (st.st_ino == s->ack_seen.st_ino && st.st_mtim.tv_sec == s->ack_seen.st_mtim.tv_sec &&
+	    st.st_mtim.tv_nsec == s->ack_seen.st_mtim.tv_nsec)
+		return;
+	s->ack_seen = st;
+	if (!S_ISREG(st.st_mode) || (st.st_uid != 0 && st.st_uid != geteuid()) ||
+	    (st.st_mode & (S_IWGRP | S_IWOTH))) {
+		fprintf(stderr, "kgmon: ignoring %s (must be a regular file owned by root, not writable by others)\n", path);
+		return;
+	}
+	f = fopen(path, "re");
+	if (!f)
+		return;
+	if (fscanf(f, "%lu", &seq) == 1) {
+		kgp_ack(&s->eng, (uint32_t)seq);
+		fprintf(stderr, "kgmon: alerts up to sequence %lu acknowledged\n", seq);
+		if (s->o.use_syslog)
+			syslog(LOG_NOTICE, "alerts up to sequence %lu acknowledged", seq);
+	}
+	fclose(f);
+}
+
+/*----------------------------------------------------------------------------
+ * systemd integration (sd_notify without libsystemd)
+ *--------------------------------------------------------------------------*/
+static void sd_notify_msg(const char *msg)
+{
+	const char *path = getenv("NOTIFY_SOCKET");
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	socklen_t len;
+	int fd;
+
+	if (!path || !*path || strlen(path) >= sizeof(sa.sun_path))
+		return;
+	memcpy(sa.sun_path, path, strlen(path));
+	len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(path));
+	if (path[0] == '@')
+		sa.sun_path[0] = '\0';     /* abstract socket */
+	fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (fd < 0)
+		return;
+	(void)sendto(fd, msg, strlen(msg), MSG_NOSIGNAL, (struct sockaddr *)&sa, len);
+	close(fd);
+}
+
+/* Ping the service manager's watchdog at half the configured interval. */
+static void watchdog_tick(void)
+{
+	static time_t next;
+	const char *usec = getenv("WATCHDOG_USEC");
+	long half_ms;
+
+	if (!usec)
+		return;
+	half_ms = strtol(usec, NULL, 10) / 2000;
+	if (half_ms <= 0)
+		return;
+	if (mono_s() >= next) {
+		sd_notify_msg("WATCHDOG=1");
+		next = mono_s() + (half_ms + 999) / 1000;
+	}
+}
 
 static void emit(struct sinks *s, const struct kg_notification *n, int hmac_ok)
 {
@@ -315,6 +673,8 @@ static void emit(struct sinks *s, const struct kg_notification *n, int hmac_ok)
 		notify_desktop(&s->o, "Notification Integrity Warning",
 			       "Alert HMAC validation failed - notification may be forged.");
 
+	policy_feed(s, n, hmac_ok, details);
+
 	s->shown++;
 }
 
@@ -346,8 +706,11 @@ static void drain(struct sinks *s, const struct kg_shared_region *r,
 	uint32_t w = __atomic_load_n(&r->write_index, __ATOMIC_ACQUIRE);
 
 	if (w - *cursor > KG_NOTIFY_SLOTS) {
-		fprintf(stderr, "kgmon: ring overrun - %u notification(s) lost\n",
-			w - *cursor - KG_NOTIFY_SLOTS);
+		unsigned lost = w - *cursor - KG_NOTIFY_SLOTS;
+
+		fprintf(stderr, "kgmon: ring overrun - %u notification(s) lost\n", lost);
+		policy_pseudo(s, KGP_ALERT_OVERRUN, KGP_CRITICAL, *cursor,
+			      "%u notification(s) lost: the ring was lapped", lost);
 		*cursor = w - KG_NOTIFY_SLOTS;
 	}
 
@@ -374,10 +737,15 @@ static void drain(struct sinks *s, const struct kg_shared_region *r,
 			 * said it was published, is not a race: report it. */
 			uint32_t w2 = __atomic_load_n(&r->write_index, __ATOMIC_ACQUIRE);
 
-			if (w2 - *cursor > KG_NOTIFY_SLOTS - 1)
+			if (w2 - *cursor > KG_NOTIFY_SLOTS - 1) {
 				fprintf(stderr, "kgmon: notification %u overwritten before it could be read\n", *cursor);
-			else
+				policy_pseudo(s, KGP_ALERT_OVERRUN, KGP_CRITICAL, *cursor,
+					      "notification %u was overwritten before it could be read", *cursor);
+			} else {
 				fprintf(stderr, "kgmon: TAMPER? slot for notification %u is unreadable or has a wrong sequence number\n", *cursor);
+				policy_pseudo(s, KGP_ALERT_TAMPER, KGP_FORGED, *cursor,
+					      "slot for notification %u is unreadable or has a wrong sequence number", *cursor);
+			}
 		}
 		(*cursor)++;
 		if (s->o.max_alerts && s->shown >= s->o.max_alerts)
@@ -435,12 +803,31 @@ static int cmd_monitor(struct opts *o)
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 	signal(SIGPIPE, SIG_IGN);
-	signal(SIGCHLD, SIG_IGN);
+
+	/* A policy the operator asked for must load, or the service fails loudly instead of never escalating. */
+	if (!o->once && !o->no_policy) {
+		const char *pf = o->policy_file;
+		char err[256];
+		struct stat st;
+
+		if (!pf && stat(DEF_POLICY, &st) == 0)
+			pf = DEF_POLICY;
+		if (pf) {
+			if (kgp_load_file(&s.pol, pf, err, sizeof(err)))
+				die("policy: %s", err);
+			kgp_init(&s.eng, &s.pol);
+			s.have_policy = 1;
+			mkdir(DEF_STATE_DIR, 0700);
+			fprintf(stderr, "kgmon: policy %s: %d action(s), %d rule(s)\n", pf, s.pol.nactions, s.pol.nrules);
+			if (o->once)
+				s.have_policy = 0;
+		}
+	}
 
 	if (o->logfile) {
 		struct stat st;
 
-		s.log = fopen(o->logfile, "a");
+		s.log = fopen(o->logfile, "ae");
 		if (!s.log)
 			die("cannot open log %s: %s", o->logfile, strerror(errno));
 		if (fstat(fileno(s.log), &st) == 0 && st.st_size == 0)
@@ -462,6 +849,8 @@ static int cmd_monitor(struct opts *o)
 	}
 
 	drain(&s, c.ring, c.key, &cursor);
+	if (!o->once)
+		sd_notify_msg("READY=1\nSTATUS=watching for alerts");
 	while (!g_stop && !o->once) {
 		struct pollfd pfd = { .fd = c.fd, .events = POLLIN };
 		int r = poll(&pfd, 1, POLL_MS);
@@ -471,10 +860,21 @@ static int cmd_monitor(struct opts *o)
 		if (r > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
 			die("device error");
 		drain(&s, c.ring, c.key, &cursor);
+
+		children_reap(o->use_syslog);
+		if (s.have_policy) {
+			policy_check_ack(&s);
+			kgp_tick(&s.eng, (uint64_t)mono_s(), run_action, &s);
+		}
+		watchdog_tick();
 	}
+	if (!o->once)
+		sd_notify_msg("STOPPING=1");
 
 	if (s.log)
 		fclose(s.log);
+	if (s.have_policy)
+		kgp_free(&s.pol);
 	memset(c.key, 0, sizeof(c.key));
 	return 0;
 }
@@ -493,6 +893,12 @@ static int cmd_status(struct opts *o)
 	printf("  mode            : %s%s\n", info.flags & KG_INFO_ENFORCE ? "ENFORCE" : "detect-only",
 	       info.flags & KG_INFO_FAIL_SAFE ? "  *** FAIL-SAFE ***" : "");
 	printf("  state integrity : %s\n", info.flags & KG_INFO_INTEGRITY_OK ? "ok" : "CORRUPT");
+	{
+		struct kg_posture_info pi;
+
+		if (ioctl(c.fd, KG_IOC_GET_POSTURE, &pi) == 0)
+			printf("  posture         : %s  (details: kgmon posture)\n", posture_text(pi.posture));
+	}
 	printf("  modules         : pmu=%s  pci-ecam=%s  text=%s  input=%s\n",
 	       info.flags & KG_INFO_PMU_ACTIVE ? "on" : "off",
 	       info.flags & KG_INFO_ECAM_ACTIVE ? "on" : "off",
@@ -547,12 +953,137 @@ static int cmd_status(struct opts *o)
 	return 0;
 }
 
+/*
+ * `kgmon posture`            show the response posture and what is driving it
+ * `kgmon posture set LEVEL`  step the posture up or down (root)
+ */
+static int cmd_posture(struct opts *o, int argc, char **argv)
+{
+	struct conn c;
+	struct kg_posture_info pi;
+	char ts[48];
+
+	if (argc >= 1 && strcmp(argv[0], "set"))
+		die("usage: kgmon posture [set normal|elevated|high|failsafe]");
+	if (argc == 1 || argc > 2)
+		die("usage: kgmon posture set normal|elevated|high|failsafe");
+
+	conn_open(&c, o->device);
+
+	if (argc == 2) {
+		struct kg_posture_req rq = { 0 };
+		int want = parse_posture(argv[1]);
+
+		if (want < 0)
+			die("unknown posture '%s' (normal, elevated, high, failsafe)", argv[1]);
+		rq.target = (uint32_t)want;
+		if (ioctl(c.fd, KG_IOC_SET_POSTURE, &rq) < 0) {
+			if (errno == EUCLEAN)
+				die("refused: the module's policy state was found corrupted, so the baseline "
+				    "it would restore cannot be trusted; unload and reload kernelguard");
+			die("KG_IOC_SET_POSTURE: %s (root required)", strerror(errno));
+		}
+	}
+
+	if (ioctl(c.fd, KG_IOC_GET_POSTURE, &pi) < 0)
+		die("KG_IOC_GET_POSTURE: %s (module too old?)", strerror(errno));
+
+	ts_string(pi.since_ns, ts, sizeof(ts));
+	printf("posture          : %s  (since %s, entered %" PRIu64 "x)\n", posture_text(pi.posture), ts,
+	       (uint64_t)pi.entered[pi.posture < KG_POSTURE_COUNT ? pi.posture : 0]);
+	if (pi.last_trigger_ns) {
+		ts_string(pi.last_trigger_ns, ts, sizeof(ts));
+		printf("last trigger     : %s  at %s\n", alert_text(pi.last_trigger_alert), ts);
+	} else {
+		printf("last trigger     : none\n");
+	}
+	printf("automatic raises : up to %s", posture_text(pi.max_posture));
+	if (pi.decay_s)
+		printf("; ELEVATED falls back to NORMAL after %u s without a trigger\n", pi.decay_s);
+	else
+		printf("; ELEVATED never decays by itself\n");
+	printf("enforcement      : %s%s\n", pi.flags & KG_POSTURE_F_ENFORCING ? "ACTIVE" : "detect-only",
+	       pi.flags & KG_POSTURE_F_AUTO_ENFORCE ? " (auto_enforce: switches on at HIGH)" : "");
+	printf("scan intervals   : PCI/input %u ms, integrity %u ms\n", pi.hw_interval_ms, pi.integ_interval_ms);
+	if (pi.flags & KG_POSTURE_F_UNTRUSTED)
+		printf("WARNING          : the policy state was corrupted; the posture cannot be lowered, reload the module\n");
+	printf("entered          : normal %" PRIu64 "  elevated %" PRIu64 "  high %" PRIu64 "  fail-safe %" PRIu64 "\n",
+	       (uint64_t)pi.entered[0], (uint64_t)pi.entered[1], (uint64_t)pi.entered[2], (uint64_t)pi.entered[3]);
+
+	memset(c.key, 0, sizeof(c.key));
+	return 0;
+}
+
+/*
+ * `kgmon ack`   acknowledge every alert seen so far: an "unacked=" escalation of the running
+ *               monitor stops for them, and a repeat afterwards is a new incident.
+ */
+static int cmd_ack(struct opts *o)
+{
+	const char *path = o->ack_file ? o->ack_file : DEF_ACK_FILE;
+	char tmp[256], *slash;
+	struct conn c;
+	uint32_t w;
+	FILE *f;
+
+	conn_open(&c, o->device);
+	w = __atomic_load_n(&c.ring->write_index, __ATOMIC_ACQUIRE);
+	memset(c.key, 0, sizeof(c.key));
+	if (!w) {
+		printf("nothing to acknowledge: the driver has raised no alerts yet\n");
+		return 0;
+	}
+
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	slash = strrchr(tmp, '/');
+	if (slash && slash != tmp) {
+		*slash = '\0';
+		mkdir(tmp, 0700);
+		*slash = '/';
+	}
+	f = fopen(tmp, "we");
+	if (!f)
+		die("cannot write %s: %s", tmp, strerror(errno));
+	fchmod(fileno(f), 0600);
+	fprintf(f, "%u\n", w - 1);
+	if (fclose(f) || rename(tmp, path))
+		die("cannot update %s: %s", path, strerror(errno));
+	printf("acknowledged alerts up to sequence %u\n", w - 1);
+	return 0;
+}
+
+/* `kgmon policy check [FILE]` */
+static int cmd_policy(struct opts *o, int argc, char **argv)
+{
+	const char *path = argc >= 2 ? argv[1] : o->policy_file ? o->policy_file : DEF_POLICY;
+	struct kgp_policy pol;
+	char err[256];
+
+	if (argc < 1 || strcmp(argv[0], "check") || argc > 2)
+		die("usage: kgmon policy check [FILE]");
+	if (kgp_load_file(&pol, path, err, sizeof(err))) {
+		fprintf(stderr, "kgmon: %s\n", err);
+		return 1;
+	}
+	printf("%s: ok, %d action(s), %d rule(s)\n", path, pol.nactions, pol.nrules);
+	for (int i = 0; i < pol.nrules; i++) {
+		const struct kgp_rule *r = &pol.rules[i];
+
+		printf("  rule %-16s level>=%-8s %s%s\n", r->name, kgp_level_name(r->min_level),
+		       r->repeat_n ? "repeat " : "", r->unacked_s ? "unacked" : "");
+	}
+	kgp_free(&pol);
+	return 0;
+}
+
 static int cmd_selftest(void)
 {
 	int bad = kg_hmac_selftest();
+	int pbad = kgp_selftest();
 
 	printf("SHA-256 / HMAC-SHA256 known-answer tests: %s\n", bad ? "FAILED" : "passed");
-	return bad ? 1 : 0;
+	printf("escalation policy tests: %s\n", pbad ? "FAILED" : "passed");
+	return bad || pbad ? 1 : 0;
 }
 
 /*
@@ -625,7 +1156,11 @@ static void usage(FILE *f)
 "Commands:\n"
 "  (none) | watch        follow alerts from the driver (default)\n"
 "  status                show driver state, per-CPU mitigation table and counters\n"
-"  selftest              run SHA-256/HMAC known-answer tests and exit\n"
+"  posture [set LEVEL]   show the response posture (normal, elevated, high, fail-safe)\n"
+"                        or, as root, step it up or down after an investigation\n"
+"  ack                   acknowledge the alerts seen so far (stops \"unacked=\" escalation)\n"
+"  policy check [FILE]   validate an escalation policy file and exit\n"
+"  selftest              run SHA-256/HMAC and escalation-policy tests and exit\n"
 "  run [--sensitive] [--] CMD...\n"
 "                        exec CMD with per-task L1D-flush / IBPB / SSBD / core\n"
 "                        scheduling enabled where the kernel supports them\n"
@@ -639,6 +1174,9 @@ static void usage(FILE *f)
 "  -1, --once            print the ring backlog and exit\n"
 "      --new-only        skip the backlog, show only new alerts\n"
 "  -m, --max N           exit after N alerts\n"
+"  -p, --policy FILE     escalation policy (default /etc/kernelguard/policy.conf when present)\n"
+"      --no-policy       do not load a policy, not even the default file\n"
+"      --ack-file FILE   where `kgmon ack` leaves its mark (default /run/kernelguard/ack)\n"
 "  -q, --quiet           no stdout output (use with --log/--syslog)\n"
 "  -V, --version\n"
 "  -h, --help\n", f);
@@ -654,6 +1192,9 @@ int main(int argc, char **argv)
 		{ "once", no_argument, 0, '1' },
 		{ "new-only", no_argument, 0, 1000 },
 		{ "max", required_argument, 0, 'm' },
+		{ "policy", required_argument, 0, 'p' },
+		{ "no-policy", no_argument, 0, 1001 },
+		{ "ack-file", required_argument, 0, 1002 },
 		{ "quiet", no_argument, 0, 'q' },
 		{ "version", no_argument, 0, 'V' },
 		{ "help", no_argument, 0, 'h' },
@@ -666,7 +1207,7 @@ int main(int argc, char **argv)
 	if (argc >= 2 && !strcmp(argv[1], "run"))
 		return cmd_run(argc - 2, argv + 2);
 
-	while ((c = getopt_long(argc, argv, "+d:l:sN::1m:qVh", lo, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "+d:l:sN::1m:p:qVh", lo, NULL)) != -1) {
 		switch (c) {
 		case 'd': o.device = optarg; break;
 		case 'l': o.logfile = optarg; break;
@@ -675,6 +1216,9 @@ int main(int argc, char **argv)
 		case '1': o.once = 1; break;
 		case 1000: o.new_only = 1; break;
 		case 'm': o.max_alerts = strtol(optarg, NULL, 10); break;
+		case 'p': o.policy_file = optarg; break;
+		case 1001: o.no_policy = 1; break;
+		case 1002: o.ack_file = optarg; break;
 		case 'q': o.quiet = 1; break;
 		case 'V': printf("kgmon %s\n", KGMON_VERSION); return 0;
 		case 'h': usage(stdout); return 0;
@@ -687,8 +1231,14 @@ int main(int argc, char **argv)
 
 		if (!strcmp(cmd, "status"))
 			return cmd_status(&o);
+		if (!strcmp(cmd, "posture"))
+			return cmd_posture(&o, argc - optind - 1, argv + optind + 1);
 		if (!strcmp(cmd, "selftest"))
 			return cmd_selftest();
+		if (!strcmp(cmd, "ack"))
+			return cmd_ack(&o);
+		if (!strcmp(cmd, "policy"))
+			return cmd_policy(&o, argc - optind - 1, argv + optind + 1);
 		if (strcmp(cmd, "watch")) {
 			fprintf(stderr, "kgmon: unknown command '%s'\n", cmd);
 			usage(stderr);

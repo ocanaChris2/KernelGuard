@@ -1,0 +1,28 @@
+Source: kernelguard
+Section: kernel
+Priority: optional
+Maintainer: @MAINTAINER@
+Build-Depends: debhelper-compat (= 13), gcc, make
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/ocanaChris2/KernelGuard
+
+Package: kernelguard
+Architecture: amd64
+Depends: dkms (>= 2.8), ${misc:Depends}, ${shlibs:Depends}
+Recommends: linux-headers-generic | linux-headers-amd64 | linux-headers
+Suggests: curl, mailutils | bsd-mailx, bsdutils
+Description: kernel-side attack and tamper detection: kernel module, monitor and escalation policy
+ KernelGuard watches the running kernel for cache side-channel patterns,
+ unauthorised keyboard handlers and DMA-capable devices, and kernel text, IDT
+ and control-register tampering, and reports through an authenticated
+ kernel-to-user channel.
+ .
+ This package installs the kernel module as DKMS source (it is rebuilt for
+ every installed kernel and is not loaded automatically), the kgmon monitor
+ with a systemd unit and a udev rule, and an example escalation policy with
+ wall, webhook and mail actions.
+ .
+ The module is Ring 0 code and defaults to detect-only. Read
+ /usr/share/doc/kernelguard/README.md before loading it, and try it in a
+ virtual machine first. It is experimental.

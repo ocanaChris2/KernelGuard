@@ -13,3 +13,6 @@ Module.symvers
 
 # user-space build products
 monitor/kgmon
+monitor/fuzz/fuzz_policy
+monitor/fuzz/fuzz_policy_lf
+monitor/fuzz/corpus/

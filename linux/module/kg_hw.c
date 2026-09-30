@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_hw.c - Module 2 (hardware half): PCIe discovery, OS/hardware cross-check
  * and DMA-exposure audit.  Counterpart of the PCI/VT-d parts of
@@ -543,7 +543,7 @@ static void kg_dma_audit(void)
 		}
 
 		/* Enforcement is re-applied every pass; it is announced once, when it first succeeds. */
-		if (kg_enforce) {
+		if (kg_enforcing()) {
 			if (kg_disable_bme(e, pdev)) {
 				if (rec && !rec->cleared) {
 					rec->cleared = true;
@@ -611,7 +611,13 @@ static void kg_hw_workfn(struct work_struct *w)
 	kg_hw_scan();
 	if (!READ_ONCE(kg_hw_stop))
 		queue_delayed_work(kg_wq, &kg_hw_work,
-				   msecs_to_jiffies(max(kg_hw_interval_ms, 100U)));
+				   msecs_to_jiffies(kg_scan_ms(kg_hw_interval_ms)));
+}
+
+void kg_hw_kick(void)
+{
+	if (!READ_ONCE(kg_hw_stop))
+		mod_delayed_work(kg_wq, &kg_hw_work, 0);
 }
 
 static int kg_pci_notify(struct notifier_block *nb, unsigned long action, void *data)
@@ -671,7 +677,7 @@ int kg_hw_init(void)
 		kg_pci_nb_registered = true;
 
 	kg_hw_running = true;
-	queue_delayed_work(kg_wq, &kg_hw_work, msecs_to_jiffies(max(kg_hw_interval_ms, 100U)));
+	queue_delayed_work(kg_wq, &kg_hw_work, msecs_to_jiffies(kg_scan_ms(kg_hw_interval_ms)));
 	return 0;
 
 err:

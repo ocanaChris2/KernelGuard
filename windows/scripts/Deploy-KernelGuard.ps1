@@ -38,6 +38,13 @@ param(
     [ValidateSet('install', 'uninstall', 'status', 'build')]
     [string]$Action = 'install',
 
+    # Whether the driver may take active action (neutralize a keyboard filter, block DMA).
+    #   auto    enforce on bare metal, detect and report only under a hypervisor (default)
+    #   detect  never act, only report
+    #   enforce always act, even inside a virtual machine (expect keyboard loss there)
+    [ValidateSet('auto', 'detect', 'enforce')]
+    [string]$Enforcement = 'auto',
+
     [switch]$SkipBuild,
     [switch]$SkipSign
 )
@@ -315,6 +322,30 @@ function Invoke-Install {
     Set-ItemProperty -Path $svcKey -Name 'Group'        -Value 'Extended Base' -Type String
     Write-Ok 'Service registry entries written.'
 
+    # ── Enforcement policy, read by the driver when it loads ──────────────────
+    $paramKey = "$svcKey\Parameters"
+    New-Item -Path $paramKey -Force | Out-Null
+    switch ($Enforcement) {
+        'detect' {
+            Set-ItemProperty -Path $paramKey -Name 'Enforce' -Value 0 -Type DWord
+            Write-Ok 'Enforcement: detect and report only (Parameters\Enforce = 0).'
+        }
+        'enforce' {
+            Set-ItemProperty -Path $paramKey -Name 'Enforce' -Value 1 -Type DWord
+            Write-Warn 'Enforcement forced ON (Parameters\Enforce = 1), also inside a virtual machine.'
+        }
+        default {
+            Remove-ItemProperty -Path $paramKey -Name 'Enforce' -ErrorAction SilentlyContinue
+            Write-Ok 'Enforcement: automatic (on for bare metal, off under a hypervisor).'
+        }
+    }
+
+    # ── Event log source used by the monitor ──────────────────────────────────
+    $evKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\KernelGuard'
+    New-Item -Path $evKey -Force | Out-Null
+    Set-ItemProperty -Path $evKey -Name 'TypesSupported' -Value 7 -Type DWord
+    Write-Ok 'Event log source "KernelGuard" registered (Application log).'
+
     # ── Step 4: start the driver via sc ───────────────────────────────────────
     # KernelGuard is a WDM kernel driver — sc start is the correct
     # loader. fltmc is only for minifilter drivers registered with Filter Manager.
@@ -370,6 +401,8 @@ function Invoke-Uninstall {
         }
         sc.exe delete $DriverName 2>&1 | Out-Null
         Write-Ok 'Service deleted.'
+        Remove-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\KernelGuard' `
+            -Recurse -Force -ErrorAction SilentlyContinue
     } else {
         Write-Warn "Service '$DriverName' was not registered — nothing to delete."
     }

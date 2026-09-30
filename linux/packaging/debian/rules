@@ -1,0 +1,45 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-2.0-only
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+VERSION := $(shell dpkg-parsechangelog -SVersion | sed 's/-[^-]*$$//;s/^[0-9]*://')
+PKG := debian/kernelguard
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+	$(MAKE) -C monitor CFLAGS="$(CFLAGS) $(CPPFLAGS)" LDFLAGS="$(LDFLAGS)"
+
+override_dh_auto_test:
+	$(MAKE) -C monitor check
+
+override_dh_auto_install:
+	install -D -m 0755 monitor/kgmon $(PKG)/usr/sbin/kgmon
+	# module source for DKMS: module/ and include/ side by side, plus dkms.conf
+	install -d $(PKG)/usr/src/kernelguard-$(VERSION)
+	cp -a module include $(PKG)/usr/src/kernelguard-$(VERSION)/
+	sed 's/@VERSION@/$(VERSION)/' packaging/dkms/dkms.conf.in > $(PKG)/usr/src/kernelguard-$(VERSION)/dkms.conf
+	# escalation actions and the example policy (paths point at the packaged actions)
+	install -d $(PKG)/usr/lib/kernelguard/actions
+	install -m 0755 scripts/actions/kg-action-*.sh $(PKG)/usr/lib/kernelguard/actions/
+	install -D -m 0644 /dev/null $(PKG)/usr/share/doc/kernelguard/examples/policy.conf.example
+	sed 's#/usr/local/lib/kernelguard/actions#/usr/lib/kernelguard/actions#' scripts/policy.conf.example \
+		> $(PKG)/usr/share/doc/kernelguard/examples/policy.conf.example
+	install -d $(PKG)/etc/kernelguard
+	# the unit and the udev rule
+	sed 's#/usr/local/sbin/kgmon#/usr/sbin/kgmon#' scripts/kernelguard-monitor.service > debian/kernelguard.kernelguard-monitor.service
+	cp scripts/70-kernelguard.rules debian/kernelguard.udev
+	install -D -m 0644 README.md $(PKG)/usr/share/doc/kernelguard/README.md
+
+override_dh_installsystemd:
+	dh_installsystemd --name=kernelguard-monitor --no-enable --no-start
+
+override_dh_installudev:
+	dh_installudev --priority=70
+
+override_dh_dwz:
+
+override_dh_strip:
+	dh_strip

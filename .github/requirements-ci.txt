@@ -1,0 +1,6 @@
+# Tool versions the CI lint job runs (and the maintainer tested locally).
+reuse==6.2.0
+ruff==0.16.9
+shellcheck-py==0.11.0.1
+actionlint-py==1.7.12.25
+remotezip==0.12.6

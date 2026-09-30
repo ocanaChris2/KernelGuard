@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Consumer for KernelGuard's fallback channel (kernel uevents), independent of the
 # /dev/kernelguard node and of kgmon.  A uevent carries only the alert type, level

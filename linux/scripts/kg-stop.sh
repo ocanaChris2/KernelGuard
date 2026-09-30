@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # kg-stop.sh - emergency stop.  Counterpart of windows/scripts/stop_driver.bat.
 #

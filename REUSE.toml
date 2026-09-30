@@ -1,0 +1,38 @@
+version = 1
+SPDX-PackageName = "KernelGuard"
+SPDX-PackageSupplier = "KernelGuard contributors"
+SPDX-PackageDownloadLocation = "https://github.com/ocanaChris2/KernelGuard"
+
+# Files with an SPDX-License-Identifier header (most of linux/) carry the same
+# id as the mapping below; "aggregate" lets the header and the mapping agree.
+# The entries cover files that cannot or do not carry a header.
+
+[[annotations]]
+path = ["linux/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 KernelGuard contributors"
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = [
+  "windows/**",
+  "build.py",
+  "build.sh",
+  "build.cmd",
+  "kgbuild/**",
+  "tools/**",
+  "docs/**",
+  "*.md",
+  ".markdownlint.json",
+  ".markdownlint-cli2.jsonc",
+  ".gitignore",
+  ".gitattributes",
+  ".editorconfig",
+  ".github/**",
+  "VERSION",
+  "REUSE.toml",
+  "LICENSE",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 KernelGuard contributors"
+SPDX-License-Identifier = "MIT"

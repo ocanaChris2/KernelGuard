@@ -1,5 +1,5 @@
 @echo off
-sc stop ScpdDriver
-sc delete ScpdDriver
+sc stop KernelGuard
+sc delete KernelGuard
 echo Driver stopped and removed.
 pause

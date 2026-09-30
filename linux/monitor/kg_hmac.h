@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * kg_hmac.h - self-contained SHA-256 / HMAC-SHA256 for the monitor.
  *

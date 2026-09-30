@@ -137,8 +137,6 @@ static VOID ScpdDriverUnload(PDRIVER_OBJECT DriverObject)
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
-    UNREFERENCED_PARAMETER(RegistryPath);
-
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
                "[KG] DriverEntry — KernelGuard v1.0\n");
 
@@ -147,6 +145,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     KeInitializeSpinLock(&g_SharedState.StateLock);
     g_SharedState.IntegrityValid = TRUE;
     g_VtdMmioBase.QuadPart = 0;
+
+    // ── Enforcement policy (registry + hypervisor guard) ─────────────────────
+    // Must precede every module that can take active action.
+    KgLoadPolicy(RegistryPath);
 
     // ── Step 1: Probe CPU and initialize mitigation engine ───────────────────
     // Must be first — all subsequent modules depend on g_CpuMit[] being filled.

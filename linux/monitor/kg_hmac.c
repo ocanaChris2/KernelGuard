@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /* kg_hmac.c - SHA-256 (FIPS 180-4) and HMAC-SHA256 (RFC 2104). */
 #include <stdlib.h>
 #include <string.h>

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_integrity.c - Module 3: kernel integrity and hook detection.
  * Counterpart of windows/src/kernel_integrity.c.
@@ -880,17 +880,24 @@ static void kg_integ_workfn(struct work_struct *w)
 	kg_cpu_state_check();
 	kg_text_verify_all();
 
-	if (!kg_guard_verify()) {
-		if (!kg_state_corrupt_reported) {
-			kg_state_corrupt_reported = true;
-			kg_report(KG_ALERT_SHARED_STATE_CORRUPT, KG_LEVEL_CRITICAL, 0, 0,
-				  "driver policy state failed its integrity check");
-		}
+	if (kg_guard_verify()) {
+		/* Answering a corruption re-hashes the table, so a later one is a new event. */
+		kg_state_corrupt_reported = false;
+	} else if (!kg_state_corrupt_reported) {
+		kg_state_corrupt_reported = true;
+		kg_report(KG_ALERT_SHARED_STATE_CORRUPT, KG_LEVEL_CRITICAL, 0, 0,
+			  "driver policy state failed its integrity check");
 	}
 
 	if (!READ_ONCE(kg_integ_stop))
 		queue_delayed_work(kg_wq, &kg_integ_work,
-				   msecs_to_jiffies(max(kg_integ_interval_ms, 100U)));
+				   msecs_to_jiffies(kg_scan_ms(kg_integ_interval_ms)));
+}
+
+void kg_integrity_kick(void)
+{
+	if (!READ_ONCE(kg_integ_stop))
+		mod_delayed_work(kg_wq, &kg_integ_work, 0);
 }
 
 /*----------------------------------------------------------------------------
@@ -934,7 +941,7 @@ int kg_integrity_init(void)
 
 	kg_integ_stop = false;
 	INIT_DELAYED_WORK(&kg_integ_work, kg_integ_workfn);
-	queue_delayed_work(kg_wq, &kg_integ_work, msecs_to_jiffies(kg_integ_interval_ms));
+	queue_delayed_work(kg_wq, &kg_integ_work, msecs_to_jiffies(kg_scan_ms(kg_integ_interval_ms)));
 	return 0;
 }
 

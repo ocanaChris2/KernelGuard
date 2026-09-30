@@ -4,3 +4,37 @@ CLAUDE.md
 
 # Python bytecode (build.py imports kgbuild/)
 __pycache__/
+*.pyc
+
+# Windows / MSBuild / WDK build output (regenerate with build.py or MSBuild)
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.tlog
+*.recipe
+*.res
+*.lastbuildstate
+*.nativecodeanalysis.xml
+*.sys
+*.exe
+*.cat
+*.cer
+*.pfx
+.vs/
+*.user
+*.suo
+
+# Local run logs (contain user and machine names)
+deploy_log.txt
+*.log
+
+# Release staging
+/dist/
+
+# Windows header cache used by tools/wdk_syntax_check.py
+/.wdk-cache/

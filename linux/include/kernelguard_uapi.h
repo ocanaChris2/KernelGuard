@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * kernelguard_uapi.h - ABI shared by the KernelGuard kernel module and the
  * user-space monitor (kgmon).  Linux counterpart of windows/usermode/kg_shared.h.
@@ -28,7 +28,7 @@
 
 /*
  * Alert codes.  Values 0x0001..0x0031 are identical to the Windows driver.
- * 0x0023..0x0025 are Linux additions in the Module 3 range.
+ * 0x0023..0x0025 are Linux additions in the Module 3 range, 0x0032 in the state range.
  *
  * Parameter conventions (Param1 / Param2):
  *   PMU_L1D/L2_ANOMALY   offender tgid (0 = unknown) / (cpu << 32) | overflows-per-second
@@ -44,6 +44,7 @@
  *   CTRL_REG_TAMPER      (cpu << 32) | register id  /  new value
  *   MODULE_LOADED        module name bytes 0-7 / bytes 8-15
  *   SHARED_STATE_CORRUPT, FAIL_SAFE_ENTERED  0 / 0
+ *   POSTURE_CHANGED      (old posture << 32) | new posture  /  (KG_POSTURE_WHY_* << 32) | trigger alert
  */
 #define KG_ALERT_PMU_L1D_ANOMALY            0x0001u
 #define KG_ALERT_PMU_L2_ANOMALY             0x0002u
@@ -61,6 +62,7 @@
 #define KG_ALERT_MODULE_LOADED              0x0024u  /* Linux addition */
 #define KG_ALERT_SHARED_STATE_CORRUPT       0x0030u
 #define KG_ALERT_FAIL_SAFE_ENTERED          0x0031u
+#define KG_ALERT_POSTURE_CHANGED            0x0032u  /* Linux addition: (old << 32) | new / (why << 32) | trigger alert */
 
 /* Flags packed into the high half of TEXT_PATCH Param2 */
 #define KG_TEXTF_KERNEL         0x1u    /* region is the core kernel image */
@@ -193,9 +195,56 @@ struct kg_hmac_key {
 	__u8 key[KG_HMAC_KEY_SIZE];
 };
 
+/*
+ * Graduated response.  The module's overall posture only ever goes up by itself
+ * (bounded by the max_posture parameter); it comes back down through decay
+ * (ELEVATED only) or an operator (KG_IOC_SET_POSTURE, CAP_SYS_ADMIN).
+ *
+ *   NORMAL    per-CPU baseline strategies, scans at their configured interval
+ *   ELEVATED  scans run 4x as often (an incident is being watched)
+ *   HIGH      every CPU held at full-spectrum mitigation (a floor the PMU
+ *             sampler cannot relax); with auto_enforce=1 also active enforcement
+ *   FAILSAFE  as HIGH, plus the state the Windows driver calls fail-safe mode
+ */
+#define KG_POSTURE_NORMAL       0
+#define KG_POSTURE_ELEVATED     1
+#define KG_POSTURE_HIGH         2
+#define KG_POSTURE_FAILSAFE     3
+#define KG_POSTURE_COUNT        4
+
+/* KG_ALERT_POSTURE_CHANGED Param2 high half: why the posture changed (automatic raises carry their own alert) */
+#define KG_POSTURE_WHY_DECAY    2       /* quiet for posture_decay_s seconds */
+#define KG_POSTURE_WHY_OPERATOR 3       /* KG_IOC_SET_POSTURE */
+
+/* kg_posture_info.flags */
+#define KG_POSTURE_F_AUTO_ENFORCE (1u << 0)     /* auto_enforce parameter is set            */
+#define KG_POSTURE_F_ENFORCING    (1u << 1)     /* active enforcement is on right now       */
+#define KG_POSTURE_F_UNTRUSTED    (1u << 2)     /* policy state was corrupted: reload module */
+
+struct kg_posture_info {
+	__u32 posture;                  /* KG_POSTURE_*                                        */
+	__u32 max_posture;              /* automatic raises stop here                          */
+	__u32 decay_s;                  /* ELEVATED -> NORMAL after this many quiet seconds (0 = never) */
+	__u32 flags;                    /* KG_POSTURE_F_*                                      */
+	__u64 since_ns;                 /* CLOCK_REALTIME of the last posture change           */
+	__u64 last_trigger_ns;          /* CLOCK_REALTIME of the last alert that raised/held it */
+	__u32 last_trigger_alert;       /* KG_ALERT_* of that alert                            */
+	__u32 hw_interval_ms;           /* effective Module 2 scan interval right now          */
+	__u32 integ_interval_ms;        /* effective Module 3 verification interval right now  */
+	__u32 pad;
+	__u64 entered[KG_POSTURE_COUNT]; /* how many times each posture has been entered       */
+};
+
+struct kg_posture_req {
+	__u32 target;                   /* KG_POSTURE_*                                        */
+	__u32 flags;                    /* must be 0                                           */
+};
+
 #define KG_IOC_MAGIC            'K'
 #define KG_IOC_GET_HMAC_KEY     _IOR(KG_IOC_MAGIC, 0x01, struct kg_hmac_key)
 #define KG_IOC_GET_INFO         _IOR(KG_IOC_MAGIC, 0x02, struct kg_info)
 #define KG_IOC_GET_CPU_INFO     _IOWR(KG_IOC_MAGIC, 0x03, struct kg_cpu_info)
+#define KG_IOC_GET_POSTURE      _IOR(KG_IOC_MAGIC, 0x04, struct kg_posture_info)
+#define KG_IOC_SET_POSTURE      _IOW(KG_IOC_MAGIC, 0x05, struct kg_posture_req)
 
 #endif /* _UAPI_KERNELGUARD_H */

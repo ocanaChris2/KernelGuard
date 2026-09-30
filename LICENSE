@@ -1,0 +1,19 @@
+KernelGuard is licensed per directory (see REUSE.toml for the exact mapping):
+
+  linux/                GPL-2.0-only   (the kernel module must be GPL-compatible;
+                                        linux/include/kernelguard_uapi.h adds the
+                                        Linux-syscall-note exception so user space
+                                        may include it)
+  windows/              MIT
+  build.py, build.sh,
+  build.cmd, kgbuild/   MIT
+  *.md, docs, CI files  MIT
+
+The full texts are in LICENSES/:
+
+  LICENSES/GPL-2.0-only.txt
+  LICENSES/Linux-syscall-note.txt
+  LICENSES/MIT.txt
+
+Each source file that carries an "SPDX-License-Identifier:" line is governed by
+that line. Everything else is covered by the REUSE.toml mapping.

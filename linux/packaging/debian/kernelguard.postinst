@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+set -e
+
+NAME=kernelguard
+VERSION=$(dpkg-query -W -f='${Version}' "$NAME" | sed 's/-[^-]*$//;s/^[0-9]*://')
+
+case "$1" in
+configure)
+    if ! dkms status -m "$NAME" -v "$VERSION" 2>/dev/null | grep -q "$NAME"; then
+        dkms add -m "$NAME" -v "$VERSION" || true
+    fi
+    # Build for every installed kernel that has headers; a failure is reported, never fatal to dpkg.
+    for kdir in /lib/modules/*/build; do
+        [ -d "$kdir" ] || continue
+        kver=$(basename "$(dirname "$kdir")")
+        dkms install -m "$NAME" -v "$VERSION" -k "$kver" ||
+            echo "kernelguard: DKMS build for $kver failed; see /var/lib/dkms/$NAME/$VERSION/build/make.log" >&2
+    done
+    echo "kernelguard: the module is built but NOT loaded. Read /usr/share/doc/kernelguard/README.md, then e.g.: sudo modprobe kernelguard" >&2
+    ;;
+esac
+
+#DEBHELPER#
+exit 0

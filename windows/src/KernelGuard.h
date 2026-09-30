@@ -436,6 +436,22 @@ typedef struct _SHARED_MEM_REGION {
 //==============================================================================
 
 typedef struct _DRIVER_SHARED_STATE {
+    // ── Policy: written once in DriverEntry, covered by StateHash ────────────
+    // Only fields that never change after initialization belong here. Anything
+    // a running driver updates (the counters below) would make the hash
+    // mismatch on the first event and send the driver into fail-safe mode.
+    ULONG           PolicyVersion;      // layout/behaviour version of this block
+    LONG            EnforceMode;        // 0 = detect and report only, 1 = enforce (see KgEnforcing)
+    ULONG           CurrentClos;        // Module 4 class of service (reserved)
+    ULONG           Reserved0;
+
+    // ── Integrity ────────────────────────────────────────────────────────────
+    KSPIN_LOCK      StateLock;
+    BOOLEAN         FailSafeMode;
+    BOOLEAN         IntegrityValid;
+    UCHAR           StateHash[32];      // SHA-256 of the policy block above StateLock
+
+    // ── Statistics: change constantly, therefore NOT hashed ──────────────────
     // Module 1
     volatile LONG   PmuAlertLevel;
     volatile LONG   PmuL1DOverflows;
@@ -456,18 +472,16 @@ typedef struct _DRIVER_SHARED_STATE {
     volatile LONG   SensPageCount;
     volatile LONG   ActiveMitigationFlags;
     volatile LONG   TotalFlushCount;
-    ULONG           CurrentClos;
 
     // Module 5
     volatile LONG   NotificationsSent;
     volatile LONG   MsrSignalsSent;
-
-    // Integrity
-    KSPIN_LOCK      StateLock;
-    BOOLEAN         FailSafeMode;
-    BOOLEAN         IntegrityValid;
-    UCHAR           StateHash[32];  // SHA-256 of everything above
 } DRIVER_SHARED_STATE, *PDRIVER_SHARED_STATE;
+
+// The hashed range is [0, StateLock): exactly the four policy ULONGs.
+C_ASSERT(FIELD_OFFSET(DRIVER_SHARED_STATE, StateLock) == 4 * sizeof(ULONG));
+
+#define KG_POLICY_VERSION 1UL
 
 //==============================================================================
 // Global state declarations (defined in shared_state.c)
@@ -574,6 +588,12 @@ VOID     UpdateSharedStateHash(VOID);
 VOID     EnterFailSafeMode(VOID);
 BOOLEAN  IsWhitelistedDriver(PUNICODE_STRING DriverName);
 BOOLEAN  IsAuthorizedDmaDevice(UCHAR Bus, UCHAR Device, UCHAR Function);
+
+// Enforcement policy: whether the driver may take active action (patch or detach
+// a keyboard filter, invalidate a VT-d entry, clear Bus Master Enable) or only
+// detect and report. Loaded once from the registry in DriverEntry.
+VOID     KgLoadPolicy(PUNICODE_STRING RegistryPath);
+BOOLEAN  KgEnforcing(VOID);
 
 //==============================================================================
 // External MASM function (verw_flush.asm)

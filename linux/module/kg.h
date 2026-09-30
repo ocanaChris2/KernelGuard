@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * kg.h - internal master header of the KernelGuard Linux module.
  * Counterpart of windows/src/KernelGuard.h.
@@ -87,8 +87,14 @@
  * Module parameters shared between files (defined in kg_main.c)
  *--------------------------------------------------------------------------*/
 extern bool kg_enforce;                 /* allow active mitigations            */
+extern bool kg_auto_enforce;            /* ...also once the posture reaches HIGH */
+extern unsigned int kg_max_posture;     /* automatic raises stop at this posture */
+extern unsigned int kg_posture_decay_s; /* ELEVATED -> NORMAL after this many quiet seconds */
 extern char kg_kbd_allow[];             /* extra allowed input handler names   */
 extern char kg_dma_allow[];             /* extra allowed PCI devices           */
+#ifdef KG_TESTHOOKS
+extern bool kg_test_bad_hmac;           /* test builds only: publish notifications with a wrong HMAC */
+#endif
 extern unsigned int kg_hw_interval_ms;
 extern unsigned int kg_integ_interval_ms;
 extern struct workqueue_struct *kg_wq;
@@ -112,6 +118,7 @@ struct kg_guard_hdr {
 	u32 abi;
 	u32 ncpu;
 	u32 failsafe;
+	u32 posture;                    /* KG_POSTURE_*; FAILSAFE <=> failsafe != 0 */
 } __packed;
 
 /*
@@ -242,13 +249,28 @@ void kg_state_exit(void);
 __printf(5, 6)
 void kg_report(u32 type, u32 level, u64 p1, u64 p2, const char *fmt, ...);
 
-void kg_enter_failsafe(void);
 bool kg_in_failsafe(void);
 bool kg_guard_verify(void);
 void kg_guard_update(void);
 void kg_guard_lock_acquire(void);        /* policy mutation = lock, mutate, unlock_release */
 void kg_guard_unlock_release(void);      /* re-hashes, then unlocks */
 bool kg_list_contains(const char *csv, const char *name);
+
+/*----------------------------------------------------------------------------
+ * Graduated response (kg_posture.c)
+ *--------------------------------------------------------------------------*/
+void kg_posture_init(void);
+void kg_posture_exit(void);
+u32  kg_posture(void);
+/* Automatic raise to at most @target (bounded by max_posture); @trigger is the KG_ALERT_* that asked. */
+void kg_posture_raise(u32 target, u32 trigger);
+/* Operator request (KG_IOC_SET_POSTURE): any posture, up or down.  Process context, CAP_SYS_ADMIN checked by the caller. */
+int  kg_posture_set(u32 target);
+void kg_posture_info(struct kg_posture_info *pi);
+/* Scan interval to use right now for a configured @base_ms (shorter while ELEVATED or above). */
+unsigned int kg_scan_ms(unsigned int base_ms);
+/* Active enforcement: enforce=1, or auto_enforce=1 and the posture is HIGH or FAILSAFE. */
+bool kg_enforcing(void);
 
 /* Sensitive-allocation registry (Windows: SensAllocatePool / SensFreePool) */
 void *kg_sens_alloc(size_t size, u8 flags);
@@ -276,8 +298,8 @@ int kg_sha256(const void *data, size_t len, u8 out[32]);
 int  kg_mit_init(void);
 void kg_mit_exit(void);
 void kg_mit_escalate_cpu(int cpu);
-void kg_mit_relax_cpu(int cpu);
-void kg_mit_set_all(u8 strategy);
+void kg_mit_relax_cpu(int cpu);          /* back to the baseline, but never below the posture's floor */
+void kg_mit_set_posture(u32 posture);    /* posture + fail-safe flag + every CPU's strategy, one critical section */
 bool kg_mit_enter_failsafe(void);        /* true only for the caller that made the transition */
 void kg_mit_flush_cpu(int cpu);          /* process context: flush @cpu per its strategy (FULL adds IBPB) */
 void kg_mit_flush_siblings(int cpu);     /* escalate + flush the SMT siblings of @cpu                       */
@@ -298,6 +320,7 @@ int  kg_hw_init(void);
 void kg_hw_exit(void);
 bool kg_hw_ecam_active(void);
 unsigned int kg_hw_device_count(void);
+void kg_hw_kick(void);                   /* schedule an immediate PCI/DMA audit */
 
 int  kg_input_init(void);
 void kg_input_exit(void);
@@ -312,6 +335,7 @@ int  kg_integrity_init(void);
 void kg_integrity_exit(void);
 bool kg_addr_in_kernel_text(unsigned long addr);
 bool kg_text_active(void);
+void kg_integrity_kick(void);            /* schedule an immediate verification pass */
 void kg_text_stats(unsigned int *regions, unsigned int *kib);
 
 /*----------------------------------------------------------------------------

@@ -1,0 +1,122 @@
+.\" SPDX-License-Identifier: GPL-2.0-only
+.TH KGMON 8 "" "KernelGuard" "System Administration"
+.SH NAME
+kgmon \- KernelGuard alert monitor, response-posture control and escalation
+.SH SYNOPSIS
+.B kgmon
+[\fIOPTIONS\fR] [\fICOMMAND\fR]
+.SH DESCRIPTION
+.B kgmon
+reads the alerts of the KernelGuard kernel module (\fB/dev/kernelguard\fR) from a read-only shared-memory ring,
+verifies the HMAC-SHA256 of every notification with the per-boot key, and reports them: on standard output, in a CSV
+log, to syslog, as desktop notifications, and, if an escalation policy is configured, by running actions.
+It needs root (the key ioctl requires \fBCAP_SYS_ADMIN\fR).
+.PP
+With no command it follows the ring: the backlog first, then new alerts, until interrupted.
+.SH COMMANDS
+.TP
+.B watch
+Follow alerts (the default).
+.TP
+.B status
+Show the module's state: mode, state integrity, response posture, the per-CPU mitigation table and the counters.
+.TP
+\fBposture\fR [\fBset\fR \fILEVEL\fR]
+Show the response posture, what raised it, the automatic ceiling, the decay time and the effective scan intervals.
+With \fBset\fR, step the posture to \fBnormal\fR, \fBelevated\fR, \fBhigh\fR or \fBfailsafe\fR.
+Lowering from HIGH or FAIL-SAFE is refused if the module found its policy state corrupted; unload and reload it.
+The change is announced with an authenticated \fBPOSTURE_CHANGED\fR alert.
+.TP
+.B ack
+Acknowledge every alert seen so far. The running monitor stops \fBunacked=\fR escalation for them; the same alert
+appearing afterwards is a new incident.
+.TP
+\fBpolicy check\fR [\fIFILE\fR]
+Validate an escalation policy and exit. Errors name the file, the line and the reason.
+.TP
+.B selftest
+Run the SHA-256/HMAC known-answer tests and the escalation-engine unit tests.
+.TP
+\fBrun\fR [\fB\-\-sensitive\fR] [\fB\-\-\fR] \fICOMMAND\fR...
+Execute \fICOMMAND\fR. With \fB\-\-sensitive\fR, first enable, where the kernel supports them, an L1D flush on
+context switch, indirect-branch and store-bypass mitigation, and a core-scheduling cookie. Each control reports
+whether it is enabled.
+.SH OPTIONS
+.TP
+\fB\-d\fR, \fB\-\-device\fR \fIPATH\fR
+Driver node (default \fB/dev/kernelguard\fR).
+.TP
+\fB\-l\fR, \fB\-\-log\fR \fIFILE\fR
+Append alerts to \fIFILE\fR as CSV (Time,Level,AlertType,HMAC,Seq,Param1,Param2,Details).
+.TP
+\fB\-s\fR, \fB\-\-syslog\fR
+Also send alerts to syslog (facility authpriv).
+.TP
+\fB\-N\fR, \fB\-\-notify\fR[=\fIUSER\fR]
+Desktop notifications through notify-send; as root, \fIUSER\fR selects whose session receives them.
+.TP
+\fB\-1\fR, \fB\-\-once\fR
+Print the backlog and exit. Never runs policy actions.
+.TP
+.B \-\-new\-only
+Skip the backlog.
+.TP
+\fB\-m\fR, \fB\-\-max\fR \fIN\fR
+Exit after \fIN\fR alerts.
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+No output on standard output.
+.TP
+\fB\-p\fR, \fB\-\-policy\fR \fIFILE\fR
+Escalation policy. Default: \fB/etc/kernelguard/policy.conf\fR if it exists.
+.TP
+.B \-\-no\-policy
+Do not load a policy, not even the default file.
+.TP
+.B \-\-ack\-file \fIFILE\fR
+Where \fBkgmon ack\fR leaves its mark (default \fB/run/kernelguard/ack\fR).
+.TP
+\fB\-V\fR, \fB\-\-version\fR; \fB\-h\fR, \fB\-\-help\fR
+Print the version or the usage.
+.SH ESCALATION POLICY
+A policy file has two directives:
+.PP
+.nf
+action NAME [timeout=SEC] /absolute/program [ARG...]
+rule   NAME [alert=LIST] [level=LEVEL] [throttle=SEC] do=ACTIONS
+            [repeat=N/SEC] [unacked=SEC] [then=ACTIONS] [reset=SEC]
+.fi
+.PP
+An \fIincident\fR is one rule, alert type and first alert parameter. \fBdo=\fR actions run when it is first seen and
+again after \fBthrottle=\fR seconds (default 60). \fBthen=\fR actions run once when it repeats \fIN\fR times within
+\fISEC\fR seconds or is still unacknowledged after \fBunacked=\fR seconds. Levels are \fBinfo\fR, \fBwarning\fR,
+\fBcritical\fR and \fBforged\fR. Alert names are those in the README without the \fBALERT_\fR prefix, plus
+\fBFORGED\fR, \fBOVERRUN\fR and \fBTAMPER\fR, which \fBkgmon\fR raises itself. A notification whose HMAC fails only
+raises \fBFORGED\fR and never matches by content.
+.PP
+Actions run without a shell, in their own process group, which is killed after the action's timeout (default 10 s).
+Their environment holds only \fBPATH\fR and \fBKG_ALERT\fR, \fBKG_ALERT_CODE\fR, \fBKG_TITLE\fR, \fBKG_LEVEL\fR,
+\fBKG_LEVEL_NUM\fR, \fBKG_SEQ\fR, \fBKG_TIME\fR, \fBKG_DETAILS\fR, \fBKG_PARAM1\fR, \fBKG_PARAM2\fR, \fBKG_RULE\fR,
+\fBKG_ACTION\fR, \fBKG_TIER\fR, \fBKG_COUNT\fR, \fBKG_AGE_S\fR and \fBKG_HOST\fR. The policy file and every action
+program must be owned by root and not writable by group or others; a policy that does not load stops the monitor.
+.SH SYSTEMD
+When started by systemd with \fBType=notify\fR, \fBkgmon\fR announces \fBREADY=1\fR, pings the watchdog at half of
+\fBWatchdogSec\fR and announces \fBSTOPPING=1\fR.
+.SH FILES
+.TP
+.B /dev/kernelguard
+The driver node (mode 0600).
+.TP
+.B /etc/kernelguard/policy.conf
+Escalation policy.
+.TP
+.B /run/kernelguard/ack
+Highest acknowledged sequence number, written by \fBkgmon ack\fR.
+.TP
+.B /run/kernelguard-monitor.lock
+Single-instance lock.
+.SH EXIT STATUS
+0 on success, 1 on an error, 2 on a usage error.
+.SH SEE ALSO
+The README shipped with the package (\fB/usr/share/doc/kernelguard/README.md\fR) for the alert protocol, the
+module parameters (\fBenforce\fR, \fBauto_enforce\fR, \fBmax_posture\fR, \fBposture_decay_s\fR) and the test suites.
