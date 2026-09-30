@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Consumer for KernelGuard's fallback channel (kernel uevents), independent of the
+# /dev/kernelguard node and of kgmon.  A uevent carries only the alert type, level
+# and sequence number - never addresses or parameters - because uevents are
+# world-readable; the authenticated detail is in the HMAC ring (kgmon).
+#
+# Install:  sudo install -m 0644 scripts/70-kernelguard.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload
+ACTION=="change", SUBSYSTEM=="misc", KERNEL=="kernelguard", ENV{KERNELGUARD_LEVEL}=="2", \
+    RUN+="/usr/bin/logger -p authpriv.crit -t kernelguard-udev 'CRITICAL alert $env{KERNELGUARD_ALERT} (seq $env{KERNELGUARD_SEQ}) - run: kgmon --once'"
+ACTION=="change", SUBSYSTEM=="misc", KERNEL=="kernelguard", ENV{KERNELGUARD_LEVEL}=="1", \
+    RUN+="/usr/bin/logger -p authpriv.warning -t kernelguard-udev 'warning alert $env{KERNELGUARD_ALERT} (seq $env{KERNELGUARD_SEQ})'"

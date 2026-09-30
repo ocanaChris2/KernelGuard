@@ -1,0 +1,1 @@
+-device pcie-root-port,id=rp1,chassis=1,slot=1,bus=pcie.0 -device pcie-root-port,id=rp2,chassis=2,slot=2,bus=pcie.0

@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
+# Test-only fixtures for the VM suite.  These are NEVER installed or loaded on a
+# host; run-vm.sh builds them and loads them inside the throw-away guest.
+obj-m := kg_test_tamper.o kg_test_rogue.o

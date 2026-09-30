@@ -1,14 +1,28 @@
-﻿﻿# KernelGuard
+# KernelGuard
 
-A Windows 11 x64 Ring-0 kernel-mode driver (WDM) that detects and actively mitigates side-channel attacks, compromised kernels, and hardware keyloggers.
+![Windows 11 x64](https://img.shields.io/badge/Windows-11%20x64-0078D4?logo=windows11&logoColor=white)
+![Linux x86-64](https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black)
+![Ring 0 kernel mode](https://img.shields.io/badge/mode-Ring%200-critical)
+![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
+
+A Windows 11 x64 Ring-0 kernel-mode driver (WDM) that detects and actively mitigates side-channel attacks, compromised kernels, and hardware keyloggers. An equivalent Linux x86-64 kernel module and monitor live in [`linux/`](linux/README.md): same five modules, same alert protocol, adapted to the mechanisms Linux supports (start with its *What differs from the Windows driver* section).
 
 The driver operates under a **zero-trust kernel assumption**: it cannot rely on kernel APIs for critical integrity operations because the kernel itself may be partially compromised. All integrity comparisons are constant-time; all security-boundary flushes execute directly via MSR writes and a MASM routine (`PerformVerwFlush`), bypassing any hooked wrappers.
 
----
+> [!CAUTION]
+> **Read before loading the driver.** This is a Ring 0 (kernel-mode) driver. Incorrect behavior, unexpected hardware or software configurations, and false-positive detections can cause **complete keyboard loss**, **system hangs**, or **Blue Screen of Death (BSOD)**. Always test in a disposable VM snapshot. Keep a recovery plan ready before loading the driver on any machine you depend on. See [Warnings & known risks](#warnings--known-risks) for details.
 
-> **WARNING — READ BEFORE LOADING THE DRIVER**
->
-> This is a Ring 0 (kernel-mode) driver. Incorrect behavior, unexpected hardware or software configurations, and false-positive detections can cause **complete keyboard loss**, **system hangs**, or **Blue Screen of Death (BSOD)**. Always test in a disposable VM snapshot. Keep a recovery plan ready before loading the driver on any machine you depend on. See [Warnings & known risks](#warnings--known-risks) for details.
+## At a glance
+
+| ID | Module | What it does |
+| --- | --- | --- |
+| **M1** | Side-channel detection | Counts L1D and L2 cache misses through the PMU to spot Flush+Reload, Prime+Probe and other cache-timing attacks |
+| **M2** | Keylogger and DMA detection | Finds unauthorized keyboard filter drivers and DMA-capable PCIe devices, and neutralizes or blocks them |
+| **M3** | Kernel integrity | Checks the IDT, the keyboard dispatch routines and the `.text` of loaded kernel modules for hooks and patches |
+| **M4** | Cache and memory mitigation | Applies microarchitectural mitigations chosen per CPU: `VERW`, L1D flush, `LFENCE`, IBRS/STIBP, CAT and SMT isolation |
+| **M5** | Secure communication | Delivers HMAC-authenticated alerts to the monitor over a shared-memory ring, with an MSR fallback |
+
+Not every documented feature is active in the current code. See [Known limitations](#known-limitations) and [what the current code means for a deployment](#what-the-current-code-means-for-a-deployment).
 
 ---
 
@@ -18,6 +32,7 @@ The driver operates under a **zero-trust kernel assumption**: it cannot rely on 
 - [Architecture overview](#architecture-overview)
 - [Module details](#module-details)
 - [Real-world attack scenarios](#real-world-attack-scenarios)
+- [Usage recommendations](#usage-recommendations)
 - [Prerequisites](#prerequisites)
 - [Repository layout](#repository-layout)
 - [Build](#build)
@@ -39,48 +54,41 @@ The driver operates under a **zero-trust kernel assumption**: it cannot rely on 
 Module 2 detects unauthorized keyboard filter drivers by comparing hardware-reported devices against the OS driver stack. In a virtual machine (VMware, VirtualBox, Hyper-V, QEMU/KVM) the hypervisor inserts its own virtual keyboard filter drivers into the stack. The driver cannot distinguish these from a rootkit filter and will flag them as `ALERT_UNAUTHORIZED_KBD_FILTER`, patching or detaching the filter via `NeutralizePassThroughDispatch` / `IoDetachDevice`. The result is **complete keyboard input loss** for the VM guest while the driver is running.
 
 **Recovery (mouse must still work):**
+
 1. Right-click `stop_driver.bat` (provided at the repo root) → **Run as administrator**. This runs `sc stop KernelGuard && sc delete KernelGuard` without requiring any keyboard input.
 2. Alternatively: right-click the Start button → *Terminal (Admin)* → `sc stop KernelGuard` typed via the on-screen keyboard (Settings → Accessibility → Keyboard → On-Screen Keyboard).
 3. In VirtualBox/VMware: revert to a snapshot taken before loading the driver.
 
 **Workaround:** A hypervisor-detection check via `CPUID` leaf `0x1` (bit 31 of ECX = hypervisor present) is planned but not yet implemented. Until it is, avoid loading the driver in a VM for any purpose other than controlled testing with a snapshot ready.
 
----
-
 ### False-positive keyboard filter detection on non-standard hardware
 
 On systems with Bluetooth keyboards, third-party keyboard remapping software (e.g., AutoHotkey kernel driver, Karabiner, manufacturer companion software), accessibility drivers, or KVM switches, Module 2's whitelist may not include the legitimate filter driver. The driver will neutralize it, potentially silencing keyboard input on that device. Check the driver stack of `\Device\KeyboardClass0` with `!devstack` in WinDbg before loading on a non-standard machine.
 
----
-
 ### RDTSC restriction may crash applications (CR4.TSD=1)
 
 Module 1 sets `CR4.TSD = 1` on all logical CPUs, causing any Ring-3 `RDTSC` or `RDTSCP` instruction to raise `#GP` instead of returning the counter. The driver's `RdtscGpHandler` counts and emulates the instruction, but the emulation path involves a kernel-mode handler at `HIGH_LEVEL` IRQL. Applications that call `RDTSC` at very high frequency (some games, multimedia encoders, hardware benchmarks, Wine/Proton DirectX translation layers) may experience crashes, incorrect timing, or severe performance degradation. `QueryPerformanceCounter` and `GetSystemTimeAsFileTime` are unaffected.
-
----
 
 ### Fail-safe mode causes maximum mitigation overhead
 
 When Module 3 detects a `.text` section SHA-256 mismatch (`ALERT_TEXT_PATCH`), the driver enters fail-safe mode and applies full-spectrum mitigations (`VERW` + L1D flush + `LFENCE` + IBRS) on every context switch. On affected CPUs this raises per-context-switch overhead to ~400 ns and can reduce throughput by 20–40% system-wide. Fail-safe mode is intentional and irreversible until the driver is stopped — it is the correct response to a detected kernel patch.
 
 False-positive `.text` mismatches can occur when:
+
 - Windows Update or a hotfix patches a kernel module after the baseline is captured at driver load time.
 - A legitimate security product (EDR, AV) uses kernel callbacks that modify `.text` at runtime.
 - The driver loads before all kernel modules are fully initialized.
 
 If fail-safe mode triggers unexpectedly, check `KernelGuardMonitor.exe` logs for `ALERT_TEXT_PATCH` and the `Param1`/`Param2` fields identifying which module hash changed.
 
----
-
 ### SMT/HyperThreading restriction degrades throughput
 
 When Module 4's SMT isolation is active (triggered by a detected attack or high anomaly level), sibling logical-core scheduling is restricted for threads that touch sensitive/tagged memory. On workloads that rely on HyperThreading (compilation, rendering, database queries), this can reduce throughput by 5–15% even when no attack is in progress. The restriction persists until the anomaly counter decays below the threshold.
 
----
-
 ### BSOD risk from unexpected hardware configurations
 
 The driver directly reads and writes MSRs, walks PCIe ECAM memory, and modifies VT-d context tables. On hardware where:
+
 - An MSR address is unimplemented (raises `#GP` at `HIGH_LEVEL` IRQL → non-maskable BSOD),
 - The ECAM or VT-d MMIO base is wrong or unmapped,
 - CAT (`MSR_IA32_PQR_ASSOC`) is unsupported but `IA32_ARCH_CAPABILITIES` reports otherwise,
@@ -89,13 +97,11 @@ The driver directly reads and writes MSRs, walks PCIe ECAM memory, and modifies 
 
 ---
 
----
-
 ## Architecture overview
 
 The driver is split into **five synergistic modules** plus shared infrastructure. All modules share a central integrity-verified state structure (`DRIVER_SHARED_STATE`) protected by a spin lock at `DISPATCH_LEVEL`.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     Ring 3 (User Mode)                      │
 │  KernelGuardMonitor.exe                                     │
@@ -107,27 +113,27 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 ┌─────────────────▼───────────────────────────────────────────┐
 │                      Ring 0 (Kernel)                        │
 │                                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │  M1 PMU  │  │  M2 HW   │  │  M3      │  │  M4      │   │
-│  │ Detection│  │ Keylogger│  │ Kernel   │  │ Cache    │   │
-│  │          │  │ Detect   │  │ Integrity│  │Mitigation│   │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────▲─────┘   │
-│       │             │              │              │         │
-│       └─────────────┴──────────────┴──────────────┘         │
-│                  cross-module events                        │
-│                  (DispatchCrossModuleEvent)                 │
-│                          │                                  │
-│                  ┌───────▼──────┐                           │
-│                  │  M5 Secure   │                           │
-│                  │   Comms      │                           │
-│                  └──────────────┘                           │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐  │
+│  │  M1 PMU  │   │  M2 HW   │   │  M3      │   │  M4      │  │
+│  │ Detection│   │ Keylogger│   │ Kernel   │   │ Cache    │  │
+│  │          │   │ Detect   │   │ Integrity│   │Mitigation│  │
+│  └────┬─────┘   └────┬─────┘   └────┬─────┘   └────▲─────┘  │
+│       │              │              │              │        │
+│       └──────────────┴──────────────┴──────────────┘        │
+│                     cross-module events                     │
+│                 (DispatchCrossModuleEvent)                  │
+│                              │                              │
+│                      ┌───────▼──────┐                       │
+│                      │  M5 Secure   │                       │
+│                      │   Comms      │                       │
+│                      └──────────────┘                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Cross-module event flow
 
 | Trigger | Response |
-|---------|----------|
+| --- | --- |
 | M1 detects high cache-miss rate | M4 increases flush frequency |
 | M2 detects DMA violation | M4 locks IOMMU + flushes buffers |
 | M3 detects IDT hook | M4 full-spectrum flush + core isolation |
@@ -139,6 +145,7 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 ## Module details
 
 ### Module 1 — Side-Channel Attack Detection (PMU)
+
 `src/pmu_detection.c`
 
 - Configures `IA32_PERFEVTSEL0/1` for L1D and L2 cache-miss counting via IPI to every logical CPU.
@@ -149,9 +156,11 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 **Alert codes emitted:** `ALERT_PMU_L1D_ANOMALY`, `ALERT_PMU_L2_ANOMALY`, `ALERT_PMU_RDTSC_RATE`
 
 ### Module 2 — Hardware Keylogger & Peripheral Detection + Mitigation
+
 `src/hw_keylogger_detect.c`
 
 **Detection:**
+
 - Walks the PCIe bus tree directly via ECAM (Enhanced Configuration Access Mechanism), bypassing the OS device stack entirely.
 - Compares hardware-discovered keyboard devices against the OS driver stack to detect unauthorized filter drivers.
 - Walks VT-d root/context tables directly from physical memory to find DMA mappings granted to unauthorized PCIe devices.
@@ -159,7 +168,7 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 **Mitigation — software keyboard filter drivers:**
 
 | Tier | Mechanism | Condition |
-|------|-----------|-----------|
+| --- | --- | --- |
 | **1 — Dispatch patch** | `NeutralizePassThroughDispatch` (NONPAGED) overwrites `MajorFunction[IRP_MJ_READ]` and `[IRP_MJ_INTERNAL_DEVICE_CONTROL]`. The stub routes every IRP directly to the lower device, bypassing the filter entirely. Keyboard continues to function; filter never sees keystroke data. | Always applied |
 | **2 — IoDetachDevice** | Removes the unauthorized device from the IRP delivery path altogether. | Only when the unauthorized device is the topmost in the stack (nothing above it) |
 | **Self-healing** | A 5-second system thread re-inspects every `\Device\KeyboardClass0..9` stack and re-applies both tiers if the rootkit restored its handler. | Continuous |
@@ -169,15 +178,17 @@ On driver unload, `HwKeyloggerUninitialize` stops the monitoring thread and rest
 **Mitigation — DMA hardware keyloggers:**
 
 | Tier | Mechanism | Condition |
-|------|-----------|-----------|
+| --- | --- | --- |
 | **1 — VT-d invalidation** | Clears the context entry's `Present` bit for the unauthorized BDF, then flushes the IOMMU context cache (`CCMD_REG` global invalidation) and the IOTLB (via the offset from `ECAP.IRO`). The device loses all DMA translations immediately. | VT-d MMIO base available |
 | **2 — PCIe BME disable** | Reads the PCIe Command register via ECAM, clears bit 2 (`Bus Master Enable`), and writes back. The device can no longer initiate DMA transactions. | VT-d unavailable or Tier 1 failed |
 
 **Alert codes emitted:** `ALERT_UNAUTHORIZED_KBD_FILTER`, `ALERT_UNAUTHORIZED_DMA`, `ALERT_PCI_DISCREPANCY`, `ALERT_KBD_FILTER_NEUTRALIZED`, `ALERT_DMA_BLOCKED_IOMMU`, `ALERT_DEVICE_BME_DISABLED`
 
-> Note: ECAM base address lookup (`PciGetEcamBaseFromAcpi`) is a stub returning `STATUS_NOT_IMPLEMENTED`. Populate `g_EcamBase` by parsing the ACPI MCFG table for your platform. The VT-d and BME mitigations require `g_VtdMmioBase` (from the ACPI DMAR table) and `g_EcamBase` respectively.
+> [!NOTE]
+> ECAM base address lookup (`PciGetEcamBaseFromAcpi`) is a stub returning `STATUS_NOT_IMPLEMENTED`. Populate `g_EcamBase` by parsing the ACPI MCFG table for your platform. The VT-d and BME mitigations require `g_VtdMmioBase` (from the ACPI DMAR table) and `g_EcamBase` respectively.
 
 ### Module 3 — Kernel Integrity & Hook Detection
+
 `src/kernel_integrity.c`
 
 Three independent sub-systems, all running at `PASSIVE_LEVEL` on a background worker thread (30-second interval):
@@ -189,6 +200,7 @@ Three independent sub-systems, all running at `PASSIVE_LEVEL` on a background wo
 **Alert codes emitted:** `ALERT_IDT_HOOK`, `ALERT_DISPATCH_HOOK`, `ALERT_TEXT_PATCH`
 
 ### Module 4 — Crypto-Agnostic Memory & Cache Mitigation (Core Engine)
+
 `src/cache_mitigation.c`
 
 The central mitigation engine. Protects any sensitive data based on memory tagging — it does not attempt to identify cryptographic code.
@@ -208,12 +220,13 @@ The central mitigation engine. Protects any sensitive data based on memory taggi
 **Alert codes emitted:** `ALERT_SHARED_STATE_CORRUPT`, `ALERT_FAIL_SAFE_ENTERED`
 
 ### Module 5 — Secure Ring 0 → Ring 3 Communication
+
 `src/secure_comms.c`
 
 Two independent channels, designed to survive a partially hooked device stack:
 
 | Channel | Mechanism | Notes |
-|---------|-----------|-------|
+| --- | --- | --- |
 | **Primary** | HMAC-authenticated shared memory section mapped into both kernel and user space | Resistant to `DeviceIoControl` hooking; each notification carries HMAC-SHA256 + sequence number |
 | **Fallback** | MSR-based covert signaling (`MSR_COVERT_SIGNAL` 0x150) | For critical alerts when the primary channel cannot be trusted |
 
@@ -230,6 +243,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M1 — Side-channel timing attacks detected by PMU
 
 #### Flush+Reload (cache-timing covert channel)
+
 **Attack:** An attacker process shares a read-only memory-mapped page with a victim process (e.g., a shared system DLL such as `ntdll.dll` or `bcrypt.dll`). The attacker flushes a specific cache line with `CLFLUSH`, waits for the victim to execute a code path that touches that line, then measures reload time with `RDTSC`. A fast reload (~4 ns) means the victim accessed that line; a slow reload (~200 ns) means it did not. By monitoring different cache lines the attacker can reconstruct what the victim did — which branch it took, which lookup table index it used, what AES round key bytes it accessed.
 
 **Real examples:** The foundational Flush+Reload attack (Yarom & Falkner, 2014, USENIX Security) was demonstrated against GnuPG's RSA implementation running on the same physical machine. Cross-VM variants work on cloud hypervisors where co-resident VMs share library pages. CVE-2014-0076 (OpenSSL EC key recovery), CVE-2018-0737 (RSA key gen timing).
@@ -239,6 +253,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Prime+Probe (LLC set-conflict timing)
+
 **Attack:** No shared memory is required. The attacker fills every cache set in a target LLC slice with attacker-controlled data (Prime phase), waits for the victim to run, then reads all its data back and measures which sets are now slow (Probe phase). Slow sets indicate the victim evicted attacker data — revealing which LLC sets the victim's data maps to. By repeating across all LLC sets the attacker builds a full memory-access profile. Used in cross-VM cloud attacks where shared pages are unavailable.
 
 **Real examples:** Last-Level Cache Side-Channel Attacks are Practical (Liu et al., 2015, IEEE S&P). CloudRadar, CacheBleed (CVE-2016-0702, OpenSSL RSA on Sandy Bridge via Intel CAT set conflicts). Demonstrated against AES-NI on shared-nothing VMs.
@@ -248,7 +263,9 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### RDTSC-based ASLR / KASLR defeat
+
 **Attack:** A Ring-3 process calls `RDTSC` in a tight loop before and after a syscall or memory access. The sub-nanosecond resolution of `RDTSC` allows the process to measure system-call latency, page-fault timing, and instruction cache behavior, which can be used to:
+
 1. Defeat KASLR by timing the latency of speculative loads that hit or miss the iTLB for kernel addresses.
 2. Break software-implemented constant-time crypto (e.g., mbedTLS, WolfSSL) by measuring per-byte timing differences too small for `GetSystemTimeAsFileTime` but visible to `RDTSC`.
 3. Build a high-resolution covert channel between two processes in a sandbox that blocks all other IPC.
@@ -260,6 +277,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Spectre v1 — Bounds Check Bypass (CVE-2017-5753)
+
 **Attack:** The attacker trains the CPU's branch predictor to predict "in-bounds" for a bounds check it controls. On the next iteration with an out-of-bounds index, the CPU speculatively executes the load using the attacker-chosen index before the misprediction is detected. The speculative load brings a secret byte into the L1D cache. The attacker then uses Flush+Reload to extract the cached byte. The entire kernel address space is readable from Ring 3 on vulnerable CPUs.
 
 **Real examples:** The original Spectre v1 PoC (Kocher et al., 2018) read kernel memory via the eBPF JIT verifier. CVE-2020-12351 (BlueZ Bluetooth Spectre gadget). CVE-2022-23816, CVE-2022-29900 (Retbleed, AMD branch prediction).
@@ -271,6 +289,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M2 — Hardware keyloggers and DMA attacks
 
 #### USB/PS2 in-line hardware keylogger
+
 **Attack:** A physical device inserted between the keyboard cable and the host USB port (KeyGrabber USB, KeyLlama, Keydemon). The device presents a legitimate HID keyboard device object to the OS while transparently relaying all keystrokes to the real keyboard. It stores captured keystrokes in internal flash memory, accessible by connecting to a specific USB VID/PID or by a special keystroke sequence. Completely invisible to software; survives OS re-installation.
 
 **Real examples:** KeyGrabber line (keelog.com) — commercially available, widely used in corporate espionage. Found in several publicly documented insider-threat cases. Similar devices deployed in the Target POS breach physical-access phase.
@@ -280,6 +299,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### DMA attack via Thunderbolt / rogue PCIe card (PCILeech)
+
 **Attack:** A device with PCIe DMA capability (Thunderbolt adapter, ExpressCard, rogue PCIe card) directly reads or writes host physical memory, bypassing the CPU and OS entirely. The attacker can read credential stores, extract BitLocker/FileVault keys from RAM, inject shellcode into the kernel, or read keystroke buffers. All of this happens at PCIe bus speed with no software interaction on the host.
 
 **Real examples:** PCILeech (GitHub: ufrisk/pcileech) — documented DMA attack framework, reads/writes arbitrary physical memory via Thunderbolt or USB 3380 cards. Inception (citp.princeton.edu) — DMA attack against FireWire, extracted FileVault and BitLocker keys. Demonstrated against Windows 10 with BitLocker enabled when the machine was running (not sleeping). CVE-2019-9897 (Thunderbolt DMA before IOMMU enabled).
@@ -289,6 +309,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Keyboard filter rootkit (software-based)
+
 **Attack:** A kernel-mode rootkit installs a device filter driver that attaches above `\Device\KeyboardClass0` using `IoAttachDeviceToDeviceStack`. Its `IRP_MJ_READ` completion routine copies keystroke data from each completed read IRP into a private ring buffer, which is later exfiltrated. The filter is invisible to user-mode tools (`sc query`, `tasklist`) because it operates entirely in kernel mode with no user-mode component that can be trivially killed.
 
 **Real examples:** Olympic Destroyer (Pyeongchang 2018 Olympics attack, attributed to Sandworm/APT28) — installed a keyboard filter driver as part of its credential harvesting stage. Agent Tesla RAT — widely deployed keyboard filter for credential theft. Azazel rootkit — open-source rootkit with IRP_MJ_READ hook on `kbdclass`. TDL4 (Alureon) — installed a boot-level filter driver on the keyboard stack to capture pre-boot passphrases.
@@ -298,6 +319,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Evil Maid attack (physical access, cold boot variant)
+
 **Attack:** An attacker with brief physical access (hotel room, unattended laptop) boots a custom OS from USB, installs a kernel-mode implant that hooks the keyboard driver, then reboots back to the original OS. On next unlock, the implant captures the full-disk-encryption passphrase. Alternatively: inserts a malicious PCIe card into an available M.2 or ExpressCard slot that DMA-reads RAM after Windows resumes from sleep (cold-boot attack variant — DRAM retains data for seconds to minutes after power-off at low temperatures).
 
 **Real examples:** Joanna Rutkowska's Evil Maid Attack (2009, against TrueCrypt). Lest We Remember cold-boot attack (Princeton, 2008) — successfully extracted BitLocker, FileVault, TrueCrypt keys from sleeping machines. FinFisher/FinSpy commercial spyware documented deploying keyboard implants via Evil Maid on Windows machines.
@@ -309,6 +331,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M3 — Kernel integrity attacks
 
 #### IDT hook (keyboard interrupt hijack)
+
 **Attack:** A rootkit replaces the IDT gate for vector `0x31` (IRQ1, the PS/2 keyboard hardware interrupt) with its own handler VA. When a key is pressed, the CPU vectors to the rootkit's handler, which logs the scan code and then chains to the original handler. This technique predates filter drivers and works even when device stacks are locked down; it operates at `HIGH_LEVEL` IRQL, making it invisible to all PASSIVE_LEVEL monitoring tools.
 
 **Real examples:** FU rootkit (original Windows IDT hooker, 2004) — replaced interrupt handlers to hide processes. Hacker Defender — comprehensive rootkit using IDT hooks for keystroke logging. NSA ANT catalog GINSU (PCI-based implant using IDT hooks for persistence). Any Ring-0 code injection that installs before this driver runs can attempt an IDT hook.
@@ -318,6 +341,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Inline kernel hook / dispatch trampoline (IRP_MJ_READ)
+
 **Attack:** A rootkit patches the first 5–14 bytes of the `kbdclass!KeyboardClassRead` dispatch routine with a JMP trampoline (or MOV RAX / PUSH RAX / RET sequence for position-independent hooking) that redirects execution to the rootkit's handler. The handler receives the completed IRP containing keystroke scan codes, copies the data, and jumps to the original routine. Unlike IDT hooks, this technique survives IDT integrity checks and works across all keyboard types (PS/2, USB HID via kbdhid, Bluetooth).
 
 **Real examples:** DOUBLEPULSAR (NSA, leaked by Shadow Brokers 2017) — hooked `srv.sys` dispatch tables using exactly the PUSH+RET pattern M3 detects. Turla/Snake APT rootkit — inline hooks on `ntdll!NtReadFile` and keyboard class driver. Necurs rootkit — hooks `kbdclass!KeyboardClassRead` for credential harvesting. Zeus banking trojan kernel component uses the same JMP rel32 hook.
@@ -327,6 +351,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Kernel `.text` section patch (persistent implant)
+
 **Attack:** A nation-state implant or advanced rootkit modifies the loaded kernel image in memory — patching a system call handler, scheduler function, or security check. Unlike a trampoline hook, the patch is applied surgically (e.g., replacing a `CMP` instruction with `XOR EAX,EAX / NOP` to disable an integrity check), making it invisible to hook scanners that only look for JMP prologues. These patches survive across function calls and are extremely difficult to detect without a clean reference copy.
 
 **Real examples:** Equation Group NOPEN implant — documented to patch `ntoskrnl!PsLookupProcessByProcessId` to hide its process from enumeration. APT41 (Winnti) — patches kernel memory to suppress Windows Defender callbacks. Derusbi/TEMP.Hermit rootkit — direct kernel memory patching for privilege escalation bypass. Flame/Sputnik malware (nation-state, 2012) — in-memory kernel patches for crypto algorithm substitution.
@@ -338,6 +363,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M4 — Microarchitectural data leakage
 
 #### MDS — RIDL / Fallout / ZombieLoad (CVE-2018-12126/12127/12130)
+
 **Attack:** Microarchitectural Data Sampling exploits the fact that the CPU's line-fill buffers, store buffers, and load ports retain stale data from previous micro-operations that executed in a different security domain (different process, different VM, or Ring-0). A carefully crafted Ring-3 process can sample this stale data by triggering a fault or assist on a load, then using a Flush+Reload gadget to extract what was in the buffers. On a server running both a cloud tenant VM and a management VM, RIDL can leak hypervisor secrets, crypto keys, or keystrokes that Ring-0 processed moments earlier.
 
 **Real examples:** RIDL (VUsec, 2019) — demonstrated leaking `/etc/shadow` from another VM on the same physical core. ZombieLoad (TU Graz, 2019) — leaked AES keys from SGX enclaves and cross-VM secrets. Intel TSX Asynchronous Abort (CVE-2019-11135) — variant that works through TSX abort paths. All require the attacker and victim to share a physical CPU core (common with SMT/HyperThreading enabled).
@@ -347,6 +373,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### L1TF / Foreshadow (CVE-2018-3615, CVE-2018-3620, CVE-2018-3646)
+
 **Attack:** L1 Terminal Fault exploits speculative execution across a page-table entry with the `Present` bit cleared. The CPU speculatively loads the L1D cache line at the physical address encoded in the PTE's PFN field before the page fault is raised, leaking its contents through a timing side-channel. An attacker can craft a PTE that points to an SGX enclave page, a hypervisor page, or any other memory marked not-present, and extract its contents without ever having a valid mapping.
 
 **Real examples:** Foreshadow-SGX (CVE-2018-3615) — leaks SGX enclave secrets, including attestation keys. Foreshadow-OS (CVE-2018-3620) — leaks kernel memory from Ring-3. Foreshadow-VMM (CVE-2018-3646) — leaks guest/hypervisor memory across VM boundaries. Any KVM or Hyper-V deployment on affected Intel CPUs is vulnerable without patching.
@@ -356,6 +383,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Spectre v2 — Branch Target Injection (CVE-2017-5715)
+
 **Attack:** The attacker trains the CPU's indirect branch predictor (BTB — Branch Target Buffer) in the attacker's own security domain to point to an attacker-chosen "gadget" in the victim's address space. When the victim next executes an indirect branch (e.g., a virtual function call or a switch-case dispatch), the CPU speculatively jumps to the attacker's chosen gadget before the correct target is resolved. If the gadget loads a secret-dependent memory location, Flush+Reload extracts the secret.
 
 **Real examples:** Spectre v2 (Kocher et al., 2018) — demonstrated reading arbitrary kernel memory from an eBPF JIT program. CVE-2022-29900 (Retbleed, AMD) — `RET` instructions used as branch targets leak kernel memory. CVE-2022-23816/29901 (Intel Retbleed via `RET`-based gadgets). Used in practical PoCs against the Linux kernel, Windows kernel, and hypervisors.
@@ -365,6 +393,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Cross-HT covert channel (SMT side-channel)
+
 **Attack:** Two sibling Hyper-Threads share the L1D cache, L1I cache, and execution ports. Thread A (attacker, low-privilege) can observe Thread B's (victim, high-privilege) memory-access patterns by: monitoring contention on shared execution units (port contention attack, PortSmash CVE-2018-5407), observing L1D cache set occupancy, or using the shared store buffer to extract stale data (MDS variants). On a machine where a password manager and a browser run on sibling HTs, the browser can extract the password manager's AES key via port contention.
 
 **Real examples:** PortSmash (CVE-2018-5407) — demonstrated extracting ECDSA private key from OpenSSL 1.1.0h running on an adjacent HT sibling. TLBleed (VUsec, 2018) — TLB-based covert channel across HT siblings. HyperBleed / SPECK — SMT-based cross-domain attacks on cloud workloads.
@@ -376,6 +405,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ### M5 — Compromised communication channel
 
 #### DeviceIoControl interception by rootkit
+
 **Attack:** A rootkit that has installed itself above this driver in the device stack (or has patched `IRP_MJ_DEVICE_CONTROL` in our dispatch table) can silently drop or forge IOCTL responses. If it drops `IOCTL_KG_GET_HMAC_KEY`, the monitor never validates HMAC and is unable to distinguish legitimate from forged alerts. If it forges `IOCTL_KG_MAP_SHARED_MEM` to return a mapping of the rootkit's own memory, the monitor reads attacker-controlled data.
 
 **Real examples:** Zeus/SpyEye banking trojans intercepted IOCTL traffic to security software hooks. Carberp rootkit patched AV driver dispatch tables to suppress threat notifications. Turla rootkit neutralized EDR agents by forging IOCTL responses.
@@ -385,6 +415,7 @@ Each module is designed around a concrete threat model. This section maps every 
 ---
 
 #### Notification suppression / replay
+
 **Attack:** Rather than forging alerts, a sophisticated rootkit may simply stop writing to the shared memory ring (if it has patched `SecureCommNotify`) or replay an old "system clean" notification in a loop. Either leaves the monitor displaying a false-green state while the attack proceeds.
 
 **Real examples:** Stuxnet-class SCADA attacks suppressed monitoring software readings while keeping the control system display showing normal operation — the same concept applied to endpoint security. FinFisher's kernel component is documented to intercept and modify responses from its detection counterpart.
@@ -393,10 +424,96 @@ Each module is designed around a concrete threat model. This section maps every 
 
 ---
 
+## Usage recommendations
+
+Where KernelGuard fits, and what to put around it. The driver watches the *kernel*, so it is most useful on machines that outsiders can touch, or run code on, but that must never hand anyone kernel-level control. It does not replace firmware lock-down, disk encryption, least privilege, patching or physical security. On an exposed machine those do more of the work; KernelGuard is a layer on top of them.
+
+> [!IMPORTANT]
+> **Treat every deployment below as a pilot, not a production roll-out.** The Windows driver is test-signed, needs HVCI off, and several documented features are not active yet ([details](#what-the-current-code-means-for-a-deployment)). The Linux module has only been load-tested in QEMU/KVM guests. Start in a lab, then move to a few machines you can reach quickly.
+
+### Fit at a glance
+
+| Scenario | Fit | Notes |
+| --- | --- | --- |
+| **Public-access computers in public institutions** (libraries, schools, town halls, clinics, internet cafés) | **Pilot** | The threat model of Modules 2 and 3: strangers with hands-on access. See [the next section](#public-institutions-and-other-publicly-reachable-computers) |
+| **Kiosks and self-service terminals** | **Pilot** | Fixed hardware, so the keyboard whitelist can be validated once per model. Nobody watches the screen, so alerts must be collected centrally |
+| **Staff PCs at a public counter** | **Pilot** | Visitors reach the ports and cables; staff can act on an alert they see |
+| **Shared labs and classrooms** | **Pilot** | Many users on identical hardware, known but not trusted with admin rights. Re-image or reset between sessions |
+| **Laptops that leave your sight** (hotels, shared offices) | **Partial** | Catches kernel-level keylogging and tampering (on Linux, only what appears after load). The evil-maid defence itself is Secure Boot, a firmware password and disk encryption |
+| **Side-channel protection on shared or multi-tenant hosts** | **Not yet** on Windows · **Evaluate** on Linux | On Windows, Module 1 never alerts the monitor and the per-context-switch hook is never registered ([Observations 2–3](linux/README.md#observations-about-the-windows-implementation)). On Linux the kernel's own mitigations do the heavy lifting; `kgmon run --sensitive` adds per-process controls |
+| **Development, research, driver testing** | **Recommended** | Use a disposable VM snapshot (expect keyboard loss in Windows guests) or a test machine with a kernel debugger attached |
+| **Virtual machines, VDI, cloud desktops** | **Not supported** on Windows · **Detect-only** on Linux | There is no hypervisor guard, so the Windows driver neutralizes the hypervisor's virtual keyboard filter and input is lost. On Linux, `enforce=1` would detach it unless it is listed in `kbd_allow=` |
+| **Machines nobody can reach if input stops working** (remote, headless, unattended) | **Avoid** | Recovery needs a working local shell or remote management |
+
+### Public institutions and other publicly reachable computers
+
+Libraries, schools, town halls, clinics, internet cafés, hotel business centres: any machine where strangers get unsupervised hands-on time and the next person trusts it with a password. An attacker needs no account, only a minute alone with the case, the ports or the keyboard cable.
+
+#### What KernelGuard covers, and what it does not
+
+| Attack | KernelGuard | What else is needed |
+| --- | --- | --- |
+| Kernel-mode keyboard filter or keylogger driver | **Yes.** M2 flags and neutralizes filters outside its whitelist; M3 checks the IDT, dispatch prologues and `.text` | Standard user accounts and application control, so nobody can load a driver in the first place |
+| Kernel tampering after the driver loads | **Yes** (M3). Baselines are taken at load, so it cannot vouch for a kernel that was already compromised at boot | Secure Boot and measured boot cover the time before load |
+| DMA attack (Thunderbolt, rogue PCIe or M.2 card) | **Windows: not active yet.** Linux: audits bus masters that appear after load; with `enforce=1` clears Bus Master Enable | Firmware: IOMMU/VT-d and Kernel DMA Protection on, Thunderbolt/USB4 and unused slots off. Port blockers, case locks |
+| Passive inline keylogger (USB or PS/2) | **No.** A transparent device never enumerates, so software cannot see it | Cable clamps, tamper-evident seals, a scheduled inspection of the rear ports |
+| USB HID injector (malicious cable, "rubber ducky"), hostile USB storage | **No.** An injector enumerates as an ordinary keyboard | USB device policy (allow only the classes needed; `usbguard` on Linux), unused ports disabled or blocked |
+| User-mode keyloggers, browser credential theft, leftover sessions | **No.** KernelGuard works at kernel level only | Kiosk or Shared PC mode, application allow-listing, wipe or re-image the profile at logout |
+| Boot-from-USB tampering, disk theft | **No** | Firmware password, locked boot order, Secure Boot, TPM-bound disk encryption, lockable chassis |
+
+#### What the current code means for a deployment
+
+- **Windows is test-signed and needs HVCI off.** Test-signing mode normally cannot be enabled while Secure Boot is on, so a Windows pilot runs without two protections that public machines would otherwise want. Production signing is listed under [Known limitations](#known-limitations).
+- **The keyboard whitelist is fixed and there is no detect-only mode.** Any driver in a keyboard stack that is not on the compiled-in list (`g_WhitelistedDrivers` in `src/shared_state.c`) is neutralized on sight and again every 5 seconds. Validate each hardware model first.
+- **The PCIe/DMA half of Module 2 is inactive on Windows.** `PciGetEcamBaseFromAcpi` is a stub and `g_VtdMmioBase` is never populated. The DMA allow-list is empty and nothing fills it, so wiring up those two alone would make every device "unauthorized". Rely on firmware and OS DMA protection.
+- **The Windows monitor is local-only.** It shows alerts on the screen in front of the visitor, lets anyone at the console close it or clear its log, and keeps nothing once closed unless someone chooses *Save Log*. There is no Event Log, syslog or network reporting.
+- **Linux trusts what is present at load.** Bus masters and input handlers attached when the module loads form the baseline (trust on first use). Load it at boot from a clean, inspected state; a rogue device already attached at that point is invisible to the audit.
+- **Linux persistence is per kernel.** After a kernel update the module must be rebuilt and, under Secure Boot, re-signed. Until then the machine is unprotected, and since `kernelguard-monitor.service` starts only when `/dev/kernelguard` exists, nothing reports it. Pin the kernel on pilot machines or add packaging (DKMS) first, and alert on the module being absent.
+
+#### Recommended setup
+
+**1. Harden the platform first.** This does more against a physical attacker than any driver.
+
+- **Firmware:** administrator password; boot from the internal disk only, boot order locked, USB and network boot off; Secure Boot on wherever the driver's signing allows it; IOMMU/VT-d and Kernel DMA Protection on; Thunderbolt/USB4 and unused expansion slots off.
+- **Disk:** full-disk encryption bound to the TPM (BitLocker, LUKS), plus a boot PIN where staff are present at power-on.
+- **Accounts and software:** visitors never get an administrator account; use kiosk (Assigned Access) or Shared PC mode, or a locked-down profile; application allow-listing (WDAC or AppLocker, AppArmor or SELinux); unique local administrator passwords; OS and firmware patched. Wipe or re-image the session at logout: that is what removes user-mode keyloggers and leftover data.
+- **USB:** allow only the device classes the machine needs.
+- **Physical:** locked or sealed case, unused ports blocked, keyboard cable clamped with a tamper-evident seal on the connector, and rear ports inspected on a schedule. A passive inline keylogger is invisible to software, so inspection is the only way to catch one.
+
+**2. Prepare KernelGuard in a lab.**
+
+- Standardize on a few hardware models and validate KernelGuard on each. On Windows, list the keyboard stacks (`!devstack \Device\KeyboardClass0` in WinDbg, see [Warnings](#warnings--known-risks)); anything off the whitelist will be neutralized, so extend the list and rebuild, or leave that model out. Accessibility drivers (screen readers, switch or Braille interfaces, on-screen keyboards), vendor keyboard utilities, remote-support agents, KVM switches and Bluetooth stacks are the usual false positives. Test the assistive technology you provide: public bodies are usually required to keep computers accessible, and a neutralized driver fails silently for exactly those users.
+- On Linux, run detect-only (the default) and review the alerts. Add `kbd_allow=` and `dma_allow=` for legitimate handlers and devices, and turn on `enforce=1` only once the alert stream is clean; a dock plugged in by staff will be cut off unless it is listed. Browsers and video playback can look like cache attacks to a miss-rate detector, so tune `pmu_warn` / `pmu_crit` ([Tuning](linux/README.md#tuning-and-false-positives)).
+- Load it early, so the baseline is taken before any session. The deploy script registers the driver as demand-start (`Start=3`), which suits a pilot because a bad build cannot stop the machine booting; `KernelGuard.inf` declares system-start (`Start=1`), which is what a production image wants. On Linux use `kg-deploy.sh persist` ([Deploy](linux/README.md#deploy)).
+
+**3. Pilot.**
+
+- Use a handful of staff-attended machines you can reach quickly, with a spare of each model, and run through at least one patch cycle: a hotfix that patches kernel modules after the baseline is captured raises `ALERT_TEXT_PATCH` and fail-safe mode ([Warnings](#fail-safe-mode-causes-maximum-mitigation-overhead)).
+- Be able to stop the driver without the local keyboard, and try it before you need it. Windows, from an elevated prompt reached by the on-screen keyboard, remote management or PowerShell remoting: `sc stop KernelGuard`, then `sc delete KernelGuard`. Linux, over SSH: `sudo sh linux/scripts/kg-stop.sh` ([Recovery](linux/README.md#recovery)).
+
+**4. Operate.**
+
+- **Collect alerts where staff will see them.** On Linux, run `kgmon --syslog --log /var/log/kernelguard-alerts.csv` under the provided `kernelguard-monitor.service` and forward the journal or CSV to your log system; the udev rule logs critical alerts even if the monitor is dead. On Windows the monitor cannot do this yet: keep the pilot to staff-only sessions and use *Save Log*, or add Event Log reporting before scaling out.
+- **Treat a missing monitor or module as an alert.** A compromised kernel can suppress notifications, and the sequence-number check only works while the monitor is running.
+
+Respond by alert type:
+
+| Alert | First response |
+| --- | --- |
+| `ALERT_UNAUTHORIZED_KBD_FILTER`, `ALERT_KBD_FILTER_NEUTRALIZED` | Take the machine out of service and treat what was typed since the last clean inspection as exposed. First rule out a legitimate driver you forgot to allow; otherwise inspect the keyboard path and re-image |
+| `ALERT_IDT_HOOK`, `ALERT_DISPATCH_HOOK`, `ALERT_TEXT_PATCH` | Assume the kernel is compromised: isolate, keep the log (*Save Log* or the CSV), re-image from known-good media. First check whether a hotfix explains a `TEXT_PATCH` |
+| `ALERT_UNAUTHORIZED_DMA`, `ALERT_PCI_DISCREPANCY`, `ALERT_DEVICE_BME_DISABLED` | A bus-master device was attached or exposed. Inspect the chassis and ports (the alert names the device by bus/device/function), then the device |
+| `ALERT_FAIL_SAFE_ENTERED`, `ALERT_SHARED_STATE_CORRUPT` | On the current Windows build these can fire without an attack: the state hash covers counters that change at run time and is never refreshed ([Observation 1](linux/README.md#observations-about-the-windows-implementation)). Look for an earlier alert before wiping anything |
+| HMAC failure, or a gap in the sequence numbers | Notifications were tampered with or suppressed: treat it as a compromise |
+
+A reboot clears fail-safe mode, but it is not remediation after any of these.
+
+---
+
 ## Prerequisites
 
 | Requirement | Notes |
-|-------------|-------|
+| --- | --- |
 | Windows 11 x64 (test VM) | `bcdedit /set testsigning on` + reboot required |
 | Visual Studio 2022 / 2025 | Desktop development with C++ workload |
 | Windows Driver Kit 10.0.26100.0 | [Download WDK](https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk) |
@@ -408,53 +525,73 @@ Each module is designed around a concrete threat model. This section maps every 
 
 ## Repository layout
 
-```
+```text
 KernelGuard/
 │
 ├── src/
-│   ├── KernelGuard.h               Master header: types, MSR constants, prototypes
-│   ├── driver_main.c                 DriverEntry / DriverUnload / device dispatch
-│   ├── shared_state.c                Global state, LogAlert, DispatchCrossModuleEvent
-│   ├── pmu_detection.c               Module 1: PMU config, PmiIsr, RDTSC profiling
-│   ├── hw_keylogger_detect.c         Module 2: PCIe ECAM walk, IOMMU/VT-d check
-│   ├── kernel_integrity.c            Module 3: IDT check, dispatch hooks, .text hash
-│   ├── cache_mitigation.c            Module 4: VERW/L1D flush, CAT, SMT, sens-page API
-│   ├── secure_comms.c                Module 5: HMAC shared memory, MSR covert channel
+│   ├── KernelGuard.h                         Master header: types, MSR constants, prototypes
+│   ├── driver_main.c                         DriverEntry / DriverUnload / device dispatch
+│   ├── shared_state.c                        Global state, LogAlert, DispatchCrossModuleEvent
+│   ├── pmu_detection.c                       Module 1: PMU config, PmiIsr, RDTSC profiling
+│   ├── hw_keylogger_detect.c                 Module 2: PCIe ECAM walk, IOMMU/VT-d check
+│   ├── kernel_integrity.c                    Module 3: IDT check, dispatch hooks, .text hash
+│   ├── cache_mitigation.c                    Module 4: VERW/L1D flush, CAT, SMT, sens-page API
+│   ├── secure_comms.c                        Module 5: HMAC shared memory, MSR covert channel
 │   ├── asm/
-│   │   └── verw_flush.asm            MASM: PerformVerwFlush() — MFENCE + VERW 0x2B
-│   └── KernelGuard.vcxproj         MSBuild driver project (WDM, DynamicLibrary+.sys)
+│   │   └── verw_flush.asm                    MASM: PerformVerwFlush() — MFENCE + VERW 0x2B
+│   └── KernelGuard.vcxproj                   MSBuild driver project (WDM, DynamicLibrary+.sys)
 │
 ├── usermode/
-│   ├── kg_shared.h                  IOCTL codes + shared structures (kernel + user)
-│   ├── main.c                        WinMain, tray icon, message pump
-│   ├── driver_comm.c / .h            Device open, IOCTL, HMAC verify, polling thread
-│   ├── log_window.c / .h             Modeless alert log dialog (ListView, Save Log)
-│   ├── resource.h                    Resource IDs
-│   ├── app.rc                        Menu, dialog, string table
-│   └── KernelGuardMonitor.vcxproj  MSBuild monitor project (Win32 GUI)
+│   ├── kg_shared.h                           IOCTL codes + shared structures (kernel + user)
+│   ├── main.c                                WinMain, tray icon, message pump
+│   ├── driver_comm.c / .h                    Device open, IOCTL, HMAC verify, polling thread
+│   ├── log_window.c / .h                     Modeless alert log dialog (ListView, Save Log)
+│   ├── resource.h                            Resource IDs
+│   ├── app.rc                                Menu, dialog, string table
+│   └── KernelGuardMonitor.vcxproj            MSBuild monitor project (Win32 GUI)
 │
-├── KernelGuard.inf               Driver INF (install / uninstall / service registration)
-├── Deploy-KernelGuard.ps1        PowerShell deploy script (build, sign, register, start)
-├── 
-├── 
-├── 
-├── 
+├── linux/                                    Linux port: module, monitor, scripts, VM tests
+│
+├── KernelGuard.sln                           Visual Studio solution (driver + monitor)
+├── KernelGuard.inf                           Driver INF (install / uninstall / service registration)
+├── Deploy-KernelGuard.ps1                    PowerShell deploy script (build, sign, register, start)
+├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
+├── LITERATURE_PRINCIPLES.md                  How to read and map the technical literature
 └── KernelGuard_Driver_Architecture_v1.1.pdf  Authoritative architecture spec
 ```
 
 ### Build outputs
 
-```
-x64\Debug\KernelGuard.sys              Kernel driver (debug)
+```text
+x64\Debug\KernelGuard.sys           Kernel driver (debug)
 x64\Debug\KernelGuard.pdb
-x64\Debug\KernelGuardMonitor.exe      User-mode monitor (debug)
-x64\Release\KernelGuard.sys            Kernel driver (release)
-x64\Release\KernelGuardMonitor.exe    User-mode monitor (release)
+x64\Debug\KernelGuardMonitor.exe    User-mode monitor (debug)
+x64\Release\KernelGuard.sys         Kernel driver (release)
+x64\Release\KernelGuardMonitor.exe  User-mode monitor (release)
 ```
 
 ---
 
 ## Build
+
+### Interactive build (Windows and Linux)
+
+`build.py` is one entry point for both platforms. It asks for the target and architecture (x64 is the only one
+the driver supports), the components, and the configuration (Windows) or kernel version (Linux), verifies that
+the toolchain for that choice is installed, then builds. It never signs, installs or loads anything.
+
+```sh
+./build.sh                                  # Linux (Windows: build.cmd) - asks what to build
+./build.sh --check                          # only verify the prerequisites; says how to fix what is missing
+./build.sh -y --components monitor          # no questions
+python build.py --help                      # every option
+```
+
+It needs Python 3.8+ (standard library only); `Deploy-KernelGuard.ps1 -Action build` and `make -C linux` still
+work without it. On Windows it finds MSBuild through `vswhere` and checks what the `.vcxproj` files ask for
+(MSVC toolsets, MASM, WDK and SDK versions, Spectre-mitigated libraries); on Linux it checks `make`, the compiler
+the kernel tree names, and the kernel headers. Exit status: `0` ok, `1` build failed, `2` bad usage,
+`3` prerequisites missing.
 
 ### Quick build (recommended)
 
@@ -472,7 +609,7 @@ From any PowerShell prompt (no VS environment setup required):
 
 ```powershell
 $msbuild = "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe"
-$root    = "C:\Users\<you>\...\SideChannelKernelPreventor"
+$root    = "C:\Users\<you>\...\KernelGuard"
 
 # Driver
 & $msbuild "$root\src\KernelGuard.vcxproj" `
@@ -498,7 +635,7 @@ cmake --build --preset x64-debug
 The driver project enforces the following key flags (see `src/KernelGuard.vcxproj`):
 
 | Flag | Purpose |
-|------|---------|
+| --- | --- |
 | `/kernel` | Ring-0 semantic restrictions |
 | `/GS-` | No CRT buffer cookie (we link `BufferOverflowFastFailK.lib` instead) |
 | `/Qspectre` | Retpoline — **do not remove** |
@@ -545,7 +682,8 @@ The driver project enforces the following key flags (see `src/KernelGuard.vcxpro
 7. **Load driver** — `sc start KernelGuard`.
 8. **Launch monitor** — starts `KernelGuardMonitor.exe`.
 
-> **Note:** `KernelGuard` is a WDM kernel driver, not a minifilter. Loading is done via `sc start`, not `fltmc load`.
+> [!NOTE]
+> `KernelGuard` is a WDM kernel driver, not a minifilter. Loading is done via `sc start`, not `fltmc load`.
 
 ### Manual installation (without the script)
 
@@ -593,7 +731,7 @@ typedef struct _SECURE_NOTIFICATION {
 ### Alert codes
 
 | Code | Value | Module | Meaning |
-|------|-------|--------|---------|
+| --- | --- | --- | --- |
 | `ALERT_PMU_L1D_ANOMALY` | `0x0001` | M1 | L1D cache-miss rate exceeds threshold (possible Flush+Reload) |
 | `ALERT_PMU_L2_ANOMALY` | `0x0002` | M1 | L2 cache-miss rate exceeds threshold |
 | `ALERT_PMU_RDTSC_RATE` | `0x0003` | M1 | Excessive RDTSC calls from Ring 3 (timing attack) |
@@ -616,7 +754,7 @@ typedef struct _SECURE_NOTIFICATION {
 The monitor opens `\\.\KernelGuard` with `FILE_READ_ACCESS` and calls two IOCTLs at startup:
 
 | IOCTL | Code | Direction | Returns |
-|-------|------|-----------|---------|
+| --- | --- | --- | --- |
 | `IOCTL_KG_MAP_SHARED_MEM` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | Pointer to `SHARED_MEM_REGION` mapped into the calling process |
 | `IOCTL_KG_GET_HMAC_KEY` | `CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)` | Out | 32-byte HMAC-SHA256 key for notification authentication |
 
@@ -625,7 +763,7 @@ The monitor opens `\\.\KernelGuard` with `FILE_READ_ACCESS` and calls two IOCTLs
 ## MSR reference
 
 | MSR | Address | Module | Purpose |
-|-----|---------|--------|---------|
+| --- | --- | --- | --- |
 | `IA32_PERFEVTSEL0–3` | 0x186–0x189 | M1 | PMU event selection |
 | `IA32_PMC0–3` | 0x0C1–0x0C4 | M1 | Performance counters |
 | `IA32_PERF_GLOBAL_CTRL` | 0x38F | M1 | Enable/disable counters globally |
@@ -643,7 +781,7 @@ The monitor opens `\\.\KernelGuard` with `FILE_READ_ACCESS` and calls two IOCTLs
 ## Performance characteristics
 
 | Scenario | Overhead |
-|----------|----------|
+| --- | --- |
 | No active attack, all mitigations idle | < 0.1% |
 | MDS mitigation only (VERW per context switch) | ~50 ns per context switch |
 | MDS + L1TF (VERW + L1D flush) | ~250 ns per context switch |
@@ -655,20 +793,25 @@ The monitor opens `\\.\KernelGuard` with `FILE_READ_ACCESS` and calls two IOCTLs
 ## Security design notes
 
 ### Zero-trust kernel assumption
+
 The driver avoids calling kernel APIs that could be hooked by a compromised kernel for any security-critical operation. MSR reads/writes use `__readmsr`/`__writemsr` intrinsics directly; the VERW flush uses the MASM `PerformVerwFlush()` routine.
 
 ### IRQL discipline
+
 - `PmiIsr` runs at `HIGH_LEVEL` (IRQL 26): zero paged memory, zero kernel API calls, only MSR reads and atomic counter increments.
 - All spin-lock–protected shared state is accessed at `DISPATCH_LEVEL`.
 - BCrypt, AuxKlib, and object manager APIs are called exclusively from `PASSIVE_LEVEL` sections (`#pragma alloc_text(PAGE, ...)`).
 
 ### Constant-time operations
+
 All integrity comparisons (SHA-256 hash checks in M3, HMAC verification in M5) use the `ConstantTimeMemEq()` helper defined in the header. No early-exit loops exist on security-critical comparison paths.
 
 ### Spectre v1 gadget prevention
+
 Every user-controlled index used to access an array goes through `SafeArrayIndex()` (constant-time bounds masking) before the load. All user-pointer accesses in IOCTL handlers use `LFENCE` before dereferencing.
 
 ### FORCEINLINE placement
+
 `ExecuteSecurityBoundaryFlush()` and other `FORCEINLINE` functions that are called from multiple translation units have their **bodies in the header** (`KernelGuard.h`), below the declarations of all symbols they reference. Placing the body in a `.c` file would allow the Release optimizer to inline within that TU and discard the external symbol, causing linker errors in callers.
 
 ---
@@ -676,7 +819,7 @@ Every user-controlled index used to access an array goes through `SafeArrayIndex
 ## Known limitations
 
 | Area | Status |
-|------|--------|
+| --- | --- |
 | **VM / hypervisor keyboard loss** | Hypervisor virtual keyboard filter drivers are indistinguishable from rootkit filters; M2 neutralizes them, causing complete keyboard loss in the guest. No hypervisor-detection guard (`CPUID` leaf 0x1 bit 31) is implemented yet. **Do not load without a VM snapshot.** See [Warnings & known risks](#warnings--known-risks). |
 | **False-positive kbd filter detection** | Third-party keyboard remapping drivers, Bluetooth stacks, KVM switches, and accessibility drivers may not be in the M2 whitelist and will be neutralized. Verify `\Device\KeyboardClass0` stack before loading on non-standard hardware. |
 | **CR4.TSD application crashes** | `RDTSC` from Ring 3 raises `#GP` while the driver is loaded. Games, encoders, and Wine/Proton layers that call `RDTSC` at high frequency may crash or degrade severely. |

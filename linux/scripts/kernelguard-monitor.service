@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Runs the KernelGuard monitor as a service.  Install with:
+#   sudo install -m 0755 monitor/kgmon /usr/local/sbin/kgmon
+#   sudo install -m 0644 scripts/kernelguard-monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now kernelguard-monitor
+#
+# Alerts go to the journal (identifier "kernelguard", facility authpriv) and to a
+# CSV file.  Add "--notify=YOURUSER" to ExecStart for desktop pop-ups.
+[Unit]
+Description=KernelGuard alert monitor
+Documentation=file:///usr/share/doc/kernelguard/README.md
+ConditionPathExists=/dev/kernelguard
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/kgmon --syslog --quiet --log /var/log/kernelguard-alerts.csv
+Restart=on-failure
+RestartSec=5
+
+# The monitor needs the device node (CAP_SYS_ADMIN for the key ioctl) and nothing else.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log /run
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
