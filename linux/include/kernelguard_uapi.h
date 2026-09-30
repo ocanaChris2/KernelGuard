@@ -28,7 +28,8 @@
 
 /*
  * Alert codes.  Values 0x0001..0x0031 are identical to the Windows driver.
- * 0x0023..0x0025 are Linux additions in the Module 3 range, 0x0032 in the state range.
+ * 0x0023, 0x0024 and 0x0032 are Linux additions (Module 3 range, state range).
+ * 0x0025..0x0027 (the driver-load gate) are new to both ports and share their numbers.
  *
  * Parameter conventions (Param1 / Param2):
  *   PMU_L1D/L2_ANOMALY   offender tgid (0 = unknown) / (cpu << 32) | overflows-per-second
@@ -43,6 +44,9 @@
  *   TEXT_PATCH           address of first mismatch / (flags << 32) | run length
  *   CTRL_REG_TAMPER      (cpu << 32) | register id  /  new value
  *   MODULE_LOADED        module name bytes 0-7 / bytes 8-15
+ *   VULN_DRIVER, DRIVER_BLOCKED
+ *                        module name bytes 0-7 / bytes 8-15 (Windows: driver file name)
+ *   LOAD_POLICY          KG_LP_* weaknesses found (0 = none)  /  raw platform state (KG_LP_RAW_*)
  *   SHARED_STATE_CORRUPT, FAIL_SAFE_ENTERED  0 / 0
  *   POSTURE_CHANGED      (old posture << 32) | new posture  /  (KG_POSTURE_WHY_* << 32) | trigger alert
  */
@@ -59,7 +63,10 @@
 #define KG_ALERT_DISPATCH_HOOK              0x0021u
 #define KG_ALERT_TEXT_PATCH                 0x0022u
 #define KG_ALERT_CTRL_REG_TAMPER            0x0023u  /* Linux addition */
-#define KG_ALERT_MODULE_LOADED              0x0024u  /* Linux addition */
+#define KG_ALERT_MODULE_LOADED              0x0024u  /* Linux addition; the Windows driver uses it for lock mode */
+#define KG_ALERT_VULN_DRIVER                0x0025u  /* a denied (known-vulnerable) driver or module is loaded */
+#define KG_ALERT_DRIVER_BLOCKED             0x0026u  /* a load was refused (Linux only: Windows cannot refuse) */
+#define KG_ALERT_LOAD_POLICY                0x0027u  /* the OS's own driver-load defences are weak (or fine) */
 #define KG_ALERT_SHARED_STATE_CORRUPT       0x0030u
 #define KG_ALERT_FAIL_SAFE_ENTERED          0x0031u
 #define KG_ALERT_POSTURE_CHANGED            0x0032u  /* Linux addition: (old << 32) | new / (why << 32) | trigger alert */
@@ -68,6 +75,23 @@
 #define KG_TEXTF_KERNEL         0x1u    /* region is the core kernel image */
 #define KG_TEXTF_UNKNOWN_TARGET 0x2u    /* new branch target is outside known code */
 #define KG_TEXTF_BREAKPOINT     0x4u    /* looks like an int3 (kprobe-style) patch */
+
+/*
+ * LOAD_POLICY Param1: weaknesses found in the OS's own defences against loading a vulnerable driver.
+ * The Linux bits are below 0x100, the Windows bits from 0x100, so one alert code serves both ports.
+ */
+#define KG_LP_NO_SIG_ENFORCE    0x0001u /* Linux: module.sig_enforce is off, unsigned modules load        */
+#define KG_LP_NO_LOCKDOWN       0x0002u /* Linux: lockdown does not restrict unsigned module loading      */
+#define KG_LP_NO_SECUREBOOT     0x0004u /* Linux: not booted with UEFI Secure Boot                        */
+#define KG_LP_TESTSIGNING       0x0100u /* Windows: test-signing on or code integrity off                 */
+#define KG_LP_NO_HVCI           0x0200u /* Windows: memory integrity (HVCI) is off                        */
+#define KG_LP_NO_BLOCKLIST      0x0400u /* Windows: Microsoft vulnerable-driver blocklist disabled        */
+
+/* LOAD_POLICY Param2 on Linux: the raw state behind the mask */
+#define KG_LP_RAW_SIG_ENFORCE   0x0001u
+#define KG_LP_RAW_LOCKDOWN      0x0002u
+#define KG_LP_RAW_SECUREBOOT    0x0004u
+#define KG_LP_RAW_SIG_BUILT     0x0008u /* the kernel was built with CONFIG_MODULE_SIG */
 
 /* Kinds for PCI_DISCREPANCY Param2 high half */
 #define KG_PCI_HIDDEN_FROM_OS   1u      /* answers in ECAM, unknown to the PCI core */
@@ -240,11 +264,36 @@ struct kg_posture_req {
 	__u32 flags;                    /* must be 0                                           */
 };
 
+/*
+ * Driver-load gate (kg_modgate.c).  Identity of a module is its name, optionally with the srcversion
+ * that modinfo prints: both sit inside the signed ELF, so a signed module cannot be renamed around
+ * the list.  A load is refused only while the module is enforcing (kg_enforcing()).
+ */
+#define KG_MODGATE_F_ACTIVE     (1u << 0)       /* the gate is registered                            */
+#define KG_MODGATE_F_LOCK       (1u << 1)       /* mod_lock is on                                    */
+#define KG_MODGATE_F_ENFORCING  (1u << 2)       /* loads are refused right now                       */
+#define KG_MODGATE_F_AUDITED    (1u << 3)       /* lp_mask / lp_raw hold the load-time OS audit      */
+
+struct kg_modgate_info {
+	__u32 flags;                    /* KG_MODGATE_F_*                                            */
+	__u32 n_deny;                   /* mod_deny entries in force                                 */
+	__u32 n_allow;                  /* mod_allow entries in force                                */
+	__u32 n_baseline;               /* modules recorded as the lock-mode baseline                */
+	__u64 deny_hits;                /* deny-list matches (loads, and modules found at load time) */
+	__u64 blocked;                  /* loads refused                                             */
+	__u64 lock_hits;                /* lock-mode violations (refused, or reported in a dry run)  */
+	__u32 lp_mask;                  /* KG_LP_* weaknesses found by the audit                     */
+	__u32 lp_raw;                   /* KG_LP_RAW_* state behind lp_mask                          */
+	__u32 ignored;                  /* parameter entries skipped (malformed, or over the limit)  */
+	__u32 pad;
+};
+
 #define KG_IOC_MAGIC            'K'
 #define KG_IOC_GET_HMAC_KEY     _IOR(KG_IOC_MAGIC, 0x01, struct kg_hmac_key)
 #define KG_IOC_GET_INFO         _IOR(KG_IOC_MAGIC, 0x02, struct kg_info)
 #define KG_IOC_GET_CPU_INFO     _IOWR(KG_IOC_MAGIC, 0x03, struct kg_cpu_info)
 #define KG_IOC_GET_POSTURE      _IOR(KG_IOC_MAGIC, 0x04, struct kg_posture_info)
 #define KG_IOC_SET_POSTURE      _IOW(KG_IOC_MAGIC, 0x05, struct kg_posture_req)
+#define KG_IOC_GET_MODGATE      _IOR(KG_IOC_MAGIC, 0x06, struct kg_modgate_info)
 
 #endif /* _UAPI_KERNELGUARD_H */

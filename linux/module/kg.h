@@ -8,6 +8,7 @@
  *   hw_keylogger_detect.c   -> kg_hw.c         Module 2 (PCI / DMA)
  *                              kg_input.c      Module 2 (keyboard path)
  *   kernel_integrity.c      -> kg_integrity.c  Module 3
+ *   driver_load_guard.c     -> kg_modgate.c    Module 3.5 (driver-load gate)
  *   cache_mitigation.c      -> kg_mitigate.c   Module 4
  *   secure_comms.c          -> kg_comms.c      Module 5
  *   shared_state.c          -> kg_state.c
@@ -337,6 +338,19 @@ bool kg_addr_in_kernel_text(unsigned long addr);
 bool kg_text_active(void);
 void kg_integrity_kick(void);            /* schedule an immediate verification pass */
 void kg_text_stats(unsigned int *regions, unsigned int *kib);
+/*
+ * Call @fn for every module that is LIVE now (except this one), outside the RCU read side and with the
+ * module pinned, so @fn may sleep.  Modules beyond the first 1024 are skipped.  Returns -ENOMEM (and
+ * calls @fn for nothing) when the scratch table cannot be allocated.  Process context.
+ */
+int  kg_for_each_live_module(void (*fn)(struct module *mod, void *arg), void *arg);
+
+/*----------------------------------------------------------------------------
+ * Module 3.5 - driver-load gate (kg_modgate.c)
+ *--------------------------------------------------------------------------*/
+int  kg_modgate_init(void);
+void kg_modgate_exit(void);
+void kg_modgate_info(struct kg_modgate_info *mi);
 
 /*----------------------------------------------------------------------------
  * Module 5 - secure communication (kg_comms.c)

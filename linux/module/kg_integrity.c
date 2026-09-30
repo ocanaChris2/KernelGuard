@@ -840,7 +840,7 @@ static bool kg_module_nb_registered;
  */
 #define KG_MAX_BOOT_MODULES 1024
 
-static void kg_enumerate_modules(void)
+int kg_for_each_live_module(void (*fn)(struct module *mod, void *arg), void *arg)
 {
 	struct module **held;
 	struct module *m;
@@ -848,7 +848,7 @@ static void kg_enumerate_modules(void)
 
 	held = kvcalloc(KG_MAX_BOOT_MODULES, sizeof(*held), GFP_KERNEL);
 	if (!held)
-		return;
+		return -ENOMEM;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(m, &THIS_MODULE->list, list) {
@@ -862,10 +862,21 @@ static void kg_enumerate_modules(void)
 	rcu_read_unlock();
 
 	for (i = 0; i < n; i++) {
-		kg_module_add(held[i]);
+		fn(held[i], arg);
 		module_put(held[i]);
 	}
 	kvfree(held);
+	return 0;
+}
+
+static void kg_module_add_cb(struct module *mod, void *unused)
+{
+	kg_module_add(mod);
+}
+
+static void kg_enumerate_modules(void)
+{
+	kg_for_each_live_module(kg_module_add_cb, NULL);
 }
 
 /*----------------------------------------------------------------------------
@@ -941,6 +952,7 @@ int kg_integrity_init(void)
 		kg_idt_enabled ? ", IDT" : "");
 
 	INIT_DELAYED_WORK(&kg_integ_work, kg_integ_workfn);
+	WRITE_ONCE(kg_integ_stop, false);       /* only now may a kick queue it */
 	queue_delayed_work(kg_wq, &kg_integ_work, msecs_to_jiffies(kg_scan_ms(kg_integ_interval_ms)));
 	return 0;
 }
@@ -952,7 +964,6 @@ void kg_integrity_exit(void)
 	if (!kg_cpu_base)
 		return;
 
-	WRITE_ONCE(kg_integ_stop, false);       /* only now may a kick queue it */
 	if (kg_module_nb_registered)
 		unregister_module_notifier(&kg_module_nb);
 	WRITE_ONCE(kg_integ_stop, true);

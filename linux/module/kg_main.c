@@ -7,11 +7,13 @@
  *   1. state + secure channel first, so anything raised while the other
  *      modules initialise already has somewhere to go
  *   2. Module 4 mitigation engine (per-CPU strategy table)
- *   3. Module 3 integrity baseline - captured BEFORE the monitors start, so it
+ *   3. the driver-load gate (Module 3.5): registered as early as anything can
+ *      report, so no module loads unseen while the monitors below start up
+ *   4. Module 3 integrity baseline - captured BEFORE the monitors start, so it
  *      records the clean pre-attack state
- *   4. Module 2 hardware / keyboard-path detection
- *   5. Module 1 PMU detection
- *   6. the device node, last
+ *   5. Module 2 hardware / keyboard-path detection
+ *   6. Module 1 PMU detection
+ *   7. the device node, last
  *
  * Core failures (state, channel, mitigation, device) abort the load.  The four
  * monitors degrade instead: a VM without a PMU or a board without an MCFG
@@ -251,6 +253,12 @@ static long kg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 		return kg_posture_set(rq.target);
 	}
+	case KG_IOC_GET_MODGATE: {
+		struct kg_modgate_info mi;
+
+		kg_modgate_info(&mi);
+		return copy_to_user(uarg, &mi, sizeof(mi)) ? -EFAULT : 0;
+	}
 	default:
 		return -ENOTTY;
 	}
@@ -319,6 +327,10 @@ static int __init kg_init(void)
 	}
 	kg_posture_init();
 
+	ret = kg_modgate_init();
+	if (ret)
+		pr_warn("driver-load gate unavailable: %d (non-fatal)\n", ret);
+
 	if (p_integrity) {
 		ret = kg_integrity_init();
 		if (ret)
@@ -356,6 +368,7 @@ err_monitors:
 	kg_input_exit();
 	kg_hw_exit();
 	kg_integrity_exit();
+	kg_modgate_exit();
 	kg_posture_exit();
 	kg_mit_exit();
 err_comms:
@@ -375,6 +388,7 @@ static void __exit kg_exit(void)
 	kg_comms_set_device(NULL);
 	misc_deregister(&kg_misc);
 
+	kg_modgate_exit();
 	kg_pmu_exit();
 	kg_input_exit();
 	kg_hw_exit();
