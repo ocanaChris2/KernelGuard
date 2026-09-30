@@ -1,0 +1,21 @@
+#!/bin/sh
+# Guest /init: mount the pseudo filesystems, run the selected test, power off.
+export PATH=/bin:/sbin:/usr/bin
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+mount -t tmpfs none /run
+mount -t tmpfs none /tmp
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+mount -t tracefs none /sys/kernel/tracing 2>/dev/null
+echo "== guest begin: $(uname -r) cpus=$(grep -c ^processor /proc/cpuinfo)"
+
+[ "$(sed -n 's/.*kgquiet=\([^ ]*\).*/\1/p' /proc/cmdline)" = 1 ] && dmesg -n 1
+TEST=$(sed -n 's/.*kgtest=\([^ ]*\).*/\1/p' /proc/cmdline)
+. /tests/lib.sh
+if [ -f "/tests/$TEST.sh" ]; then
+    . "/tests/$TEST.sh"
+else
+    bad "unknown test '$TEST'"
+fi
+finish

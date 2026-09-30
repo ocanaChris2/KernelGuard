@@ -1,0 +1,15 @@
+# Kbuild / module build products
+*.ko
+*.o
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+.module-common.*
+*.symvers
+
+# user-space build products
+monitor/kgmon
