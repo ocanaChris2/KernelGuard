@@ -9,8 +9,8 @@ step "CSV log (Windows 'Save Log' columns)"
 kgmon --once --quiet --log /tmp/kg.csv
 cat /tmp/kg.csv
 check "header row matches the Windows monitor"  sh -c 'head -1 /tmp/kg.csv | grep -qx "Time,Level,AlertType,HMAC,Seq,Param1,Param2,Details"'
-check "one row per alert (4 incl. fail-safe)"   sh -c '[ $(wc -l < /tmp/kg.csv) -eq 5 ]'
-check "rows are quoted and hex-formatted"       grep -q '"Kernel .text Patched",OK,0,0x0000000000004000,0x0000000c00000000\|"Kernel .text Patched",OK,0,0x0000000000004000,0x000000000000000c' /tmp/kg.csv
+check "one row per alert (load-policy audit, 4 injected incl. fail-safe)" sh -c '[ $(wc -l < /tmp/kg.csv) -eq 6 ]'
+check "rows are quoted and hex-formatted"       grep -q '"Kernel .text Patched",OK,[0-9]*,0x0000000000004000,0x0000000c00000000\|"Kernel .text Patched",OK,[0-9]*,0x0000000000004000,0x000000000000000c' /tmp/kg.csv
 check "HMAC status column says OK"              sh -c '! grep -q ",FAIL," /tmp/kg.csv'
 kgmon --once --quiet --log /tmp/kg.csv
 check "appending does not repeat the header"    sh -c '[ $(grep -c "^Time," /tmp/kg.csv) -eq 1 ]'
