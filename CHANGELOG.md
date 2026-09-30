@@ -73,6 +73,12 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
     Microsoft vulnerable-driver blocklist (`LOAD_POLICY`). **It cannot refuse a load**; prevention there is Code
     Integrity's blocklist and HVCI. `-LockMode`, `-DenyDriverHash` and `-AllowDriverHash` in `Deploy-KernelGuard.ps1`.
     The monitor shows the new alerts. The policy block's `Reserved0` became `LockMode` (`KG_POLICY_VERSION` 2).
+  - **Blocklist database:** `tools/blocklist_db.py` builds `blocklist/kernelguard-blocklist.db` (SQLite, gitignored)
+    from the live LOLDrivers dataset (Authentihash and file hashes, categories, CVEs), the Windows digest table and
+    the operator's `usb/blocklist/*.deny` lists. Commands: `build`, `update` (refresh in place, report the
+    difference, keep the old file if the download fails), `lookup`, `export sha256|modules`, `stats`, `check`.
+    `tools/systemd/` has a per-user daily timer (`install.sh`). `tools/test_blocklist_db.py` tests it offline. Nothing
+    reads the database yet; it also picks up flat `AuthentihashSHA256` keys that `import_loldrivers.py` ignores.
   - **Tools:** `tools/import_loldrivers.py` (deterministic; `--check` reports whether the table is out of date),
     `tools/pe_authentihash.py` (an independent Authenticode digest, and the digest recorded in a signature) and
     `tools/test_pe_authenticode.py`, which builds `pe_authenticode.c` on Linux and checks it against the digests

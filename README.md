@@ -262,6 +262,28 @@ The built-in table is a snapshot of the LOLDrivers dataset (Apache License 2.0, 
 [github.com/magicsword-io/LOLDrivers](https://github.com/magicsword-io/LOLDrivers); text in `LICENSES/Apache-2.0.txt`).
 `tools/import_loldrivers.py --check` says whether it is out of date; regenerate it with the same tool.
 
+**Blocklist database.** `tools/blocklist_db.py` collects the signatures into a SQLite database,
+`blocklist/kernelguard-blocklist.db` (generated and gitignored; standard library only). Its sources are the live
+LOLDrivers dataset (per driver: category, CVEs, references; per sample: the Authentihash and the SHA-256, SHA-1
+and MD5 file hashes), the digest table above, and your own `usb/blocklist/sha256.deny` and `modules.deny`. The view
+`blocklist` folds duplicates to one row per value with the worst class (`malicious`, `vulnerable`, `deny`). Nothing
+in the driver or the USB scan reads the database yet: it is the place to look up and export from. A hit is evidence,
+not a verdict, because LOLDrivers also lists drivers that legitimate software installs.
+
+```sh
+tools/blocklist_db.py build                # download LOLDrivers and write the database (--offline: no download)
+tools/blocklist_db.py update               # refresh in place, report what changed; a failed download keeps the old file
+tools/blocklist_db.py lookup HASH|MODULE   # which lists name it (any algorithm, any case); exit 1 if none
+tools/blocklist_db.py export sha256        # every SHA-256, for usb/blocklist/sha256.deny (--min-class malicious)
+tools/blocklist_db.py export modules       # Linux module entries, for usb/blocklist/modules.deny
+tools/blocklist_db.py stats                # counts per source, platform and class
+tools/blocklist_db.py check                # is every digest of the Windows table also in the database?
+```
+
+To refresh it daily, run `tools/systemd/install.sh` (a per-user systemd timer, no root; `--remove` undoes it). It runs
+`update` with up to an hour of random delay, and at the next login if the machine was off. The timer refreshes only
+the database: the Windows table and the USB deny lists change when you regenerate or export them.
+
 **Verification status.** The digest code is built on Linux and checked (`tools/test_pe_authenticode.py`) against the
 digest recorded inside real Microsoft signatures for 32-bit, 64-bit and ARM64 images, against an independent
 implementation, and against thousands of hostile headers; the table parsing and lookup (`digest_table.c`) is checked
@@ -637,7 +659,8 @@ KernelGuard/
 ├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
 ├── kgbuild/                                  Code behind build.py: linux.py and windows.py, plus the shared flow
 ├── tools/                                    version.py, changelog_notes.py, wdk_syntax_check.py, import_loldrivers.py,
-│                                             pe_authentihash.py, test_pe_authenticode.py, test_digest_table.py
+│                                             pe_authentihash.py, test_pe_authenticode.py, test_digest_table.py,
+│                                             blocklist_db.py, test_blocklist_db.py, systemd/ (daily refresh timer)
 ├── docs/THREAT_MODEL.md                      Assets, adversaries, assumptions, coverage, non-goals
 ├── ROADMAP.md, CHANGELOG.md                  Stages and gates; what changed
 ├── SECURITY.md, CONTRIBUTING.md              Reporting a vulnerability; how to work on it

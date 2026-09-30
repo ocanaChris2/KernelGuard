@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 KernelGuard contributors
+[Unit]
+Description=Refresh the KernelGuard blocklist database from LOLDrivers
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# install.sh replaces @REPO@ with this checkout
+ExecStart=/usr/bin/python3 @REPO@/tools/blocklist_db.py update
+Nice=10
