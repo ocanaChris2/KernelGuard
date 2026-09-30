@@ -16,7 +16,7 @@
 #   kg-deploy.sh unpersist                 undo persist
 #
 # key=value arguments are module parameters (enforce=1, kbd_allow=..., dma_allow=...,
-# pmu_warn=..., see README).  Environment: KVER (kernel to build for),
+# mod_deny=..., mod_lock=1, pmu_warn=..., see README).  Environment: KVER (kernel to build for),
 # KG_MODULE / KG_KGMON (override the artefact paths), DESTDIR (stage `persist`
 # into a directory instead of the live system - no root needed).
 #
@@ -158,7 +158,10 @@ do_install() {
     if loaded; then die "kernelguard is already loaded (use: $0 uninstall)"; fi
     case " $PARAMS " in *" enforce=1 "*)
         warn "enforce=1: unauthorised bus masters lose bus mastering, unauthorised input handlers are detached."
-        warn "Emergency off without unloading: echo 0 > /sys/module/kernelguard/parameters/enforce";;
+        warn "Emergency off without unloading: echo 0 > /sys/module/kernelguard/parameters/enforce"
+        case " $PARAMS " in *" mod_deny="*|*" mod_lock=1 "*)
+            warn "with mod_deny= / mod_lock=1, modules that match are refused too (insmod and modprobe fail with EPERM)."
+        esac;;
     esac
 
     say "loading kernelguard${PARAMS:+ ($PARAMS)}"

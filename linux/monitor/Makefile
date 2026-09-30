@@ -14,12 +14,12 @@ CFLAGS  ?= -O2 -g -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDFLAGS ?= -Wl,-z,relro,-z,now
 override CFLAGS += -Wall -Wextra -Wshadow -Wstrict-prototypes -Wformat=2 -I../include
 
-SRC := kgmon.c kg_hmac.c kg_policy.c
+SRC := kgmon.c kg_hmac.c kg_policy.c kg_modid.c
 
-kgmon: $(SRC) kg_hmac.h kg_policy.h ../include/kernelguard_uapi.h
+kgmon: $(SRC) kg_hmac.h kg_policy.h kg_modid.h ../include/kernelguard_uapi.h
 	$(CC) $(CFLAGS) $(SRC) -o $@ $(LDFLAGS)
 
-static: $(SRC) kg_hmac.h kg_policy.h ../include/kernelguard_uapi.h
+static: $(SRC) kg_hmac.h kg_policy.h kg_modid.h ../include/kernelguard_uapi.h
 	$(CC) $(CFLAGS) -static $(SRC) -o kgmon $(LDFLAGS)
 
 check: kgmon
