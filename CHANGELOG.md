@@ -16,6 +16,11 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
   REUSE-compliant `REUSE.toml`.
 - `VERSION` file and `tools/version.py` to keep the embedded versions consistent.
 - `SECURITY.md`, `CONTRIBUTING.md`, `.editorconfig`, `.gitattributes`, issue and pull-request templates.
+- GitHub Actions: `lint` (REUSE, versions, markdownlint, shellcheck, ruff, actionlint), `linux` (module and
+  monitor build with `W=1`, sparse, monitor self-test, QEMU module tests), `codeql`, `release` (tag-driven:
+  source tarball, static `kgmon`, SPDX SBOM, checksums, provenance) and a manual `windows` build.
+  Dependabot keeps actions and CI tool pins current. The workflows are validated with `actionlint`;
+  none has run on GitHub yet.
 
 ### Changed
 

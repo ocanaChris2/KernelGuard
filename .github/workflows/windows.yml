@@ -1,0 +1,61 @@
+name: windows
+
+# Manual until it has run green once: nothing in this repository has been built on a
+# GitHub-hosted Windows runner yet, and the driver project pins the v145 (Visual Studio 2026)
+# toolset. Run it from the Actions tab; expect to adjust the image, the WDK install and the
+# toolset override the first time.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Runner image
+        default: windows-2025
+        type: choice
+        options: [windows-2025, windows-2022, windows-latest]
+      wdk:
+        description: winget package id of the WDK matching the installed Windows SDK
+        default: Microsoft.WindowsWDK.10.0.26100
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.image }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show what the image provides
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -prerelease -format json |
+            ConvertFrom-Json | ForEach-Object { "$($_.displayName) $($_.installationVersion) $($_.installationPath)" }
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory | ForEach-Object Name
+
+      - name: Install the WDK
+        shell: pwsh
+        run: |
+          winget install --id "${{ inputs.wdk }}" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { "$($_.Name): km=$(Test-Path (Join-Path $_.FullName 'km'))" }
+
+      - name: Prerequisite check
+        run: python build.py --platform windows --components all --config ${{ matrix.config }} --check --no-color
+
+      - name: Build driver and monitor
+        run: python build.py --platform windows --components all --config ${{ matrix.config }} -y --no-color
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.config }}
+          path: |
+            windows/x64/${{ matrix.config }}/KernelGuard.sys
+            windows/x64/${{ matrix.config }}/KernelGuardMonitor.exe
+            windows/x64/${{ matrix.config }}/*.pdb
+          if-no-files-found: error
