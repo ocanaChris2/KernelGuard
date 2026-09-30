@@ -262,7 +262,8 @@ static void kg_pmu_sample(struct work_struct *work)
 
 		for_each_cpu(sib, topology_sibling_cpumask(cpu))
 			hot |= per_cpu(kg_pmu_cpu, sib).crit;
-		if (!hot && kg_guard.cpu[cpu].strategy != kg_guard.cpu[cpu].base_strategy)
+		if (!hot && kg_posture() < KG_POSTURE_HIGH &&
+		    kg_guard.cpu[cpu].strategy != kg_guard.cpu[cpu].base_strategy)
 			kg_mit_relax_cpu(cpu);
 	}
 

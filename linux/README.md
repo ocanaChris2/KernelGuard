@@ -30,6 +30,7 @@ Each such case is replaced by the mechanism Linux actually supports, and every d
 - [What differs from the Windows driver](#what-differs-from-the-windows-driver)
 - [Architecture](#architecture)
 - [Module details](#module-details)
+- [Graduated response](#graduated-response)
 - [Prerequisites](#prerequisites)
 - [Repository layout](#repository-layout)
 - [Build](#build)
@@ -56,6 +57,7 @@ Each such case is replaced by the mechanism Linux actually supports, and every d
 | Takes **active** mitigation (clears PCI bus mastering, detaches an input handler) | always | **only with `enforce=1`**; default is detect-only |
 | Writes MSRs it does not own | `SPEC_CTRL`, PMU, `0x150` | only `IA32_FLUSH_CMD` and `IA32_PRED_CMD` (one-shot commands) |
 | Can be switched off at run time without unloading | no | `echo 0 > /sys/module/kernelguard/parameters/enforce` |
+| Reaction to a kernel-integrity alert | fixed; fail-safe until unload | a [posture ladder](#graduated-response): bounded by `max_posture`, stepped down by an operator without unloading |
 | Fatal init failures | M3, M4, M5 | core only (state, channel, mitigation, device); the four monitors degrade |
 
 The Windows README documents keyboard loss on VMs and on non-standard hardware as the price of acting
@@ -164,8 +166,20 @@ Init order (as `DriverEntry`): state → secure channel → mitigation engine �
 
 ### Cross-module event flow
 
-| Trigger | Response |
-| --- | --- |
+| Trigger | Response | Posture |
+| --- | --- | --- |
+| M1 critical cache-miss rate on a CPU | M4 escalates that CPU **and its SMT siblings** to full-spectrum and flushes them | ELEVATED |
+| M2 unauthorised bus master | M4 flush per the CPU's strategy | ELEVATED |
+| M2 PCI discrepancy | M3 immediate keyboard-path scan | ELEVATED |
+| M2 unauthorised keyboard handler, handler neutralised, bus mastering cleared | alert only (plus enforcement when enabled) | ELEVATED |
+| M3 suspicious module load | alert only | ELEVATED |
+| M3 IDT / syscall MSR / `CR0.WP` / `CR4` tamper | M4 full-spectrum on every CPU, held as a floor | HIGH |
+| M3 critical `.text` patch or input-callback hook | fail-safe: full-spectrum everywhere | FAIL-SAFE |
+| M4 policy-state hash mismatch | fail-safe | FAIL-SAFE |
+
+Every raise is bounded by `max_posture`; see [Graduated response](#graduated-response).
+
+--- | --- |
 | M1 critical cache-miss rate on a CPU | M4 escalates that CPU **and its SMT siblings** to full-spectrum and flushes them |
 | M2 unauthorised bus master | M4 flush per the CPU's strategy |
 | M2 PCI discrepancy | M3 immediate keyboard-path scan |
@@ -276,7 +290,9 @@ Init order (as `DriverEntry`): state → secure channel → mitigation engine �
   (masks are shown by `kgmon status` on CAT-capable CPUs).
 - **Sensitive allocations:** `kg_sens_alloc()` / `kg_sens_free()` / `kg_sens_pfn_tagged()` (`EXPORT_SYMBOL_GPL`)
   track tagged buffers and zero them on free. The module uses it for its own key material.
-- **Fail-safe:** every CPU switches to full-spectrum and everything is flushed once. Irreversible until unload.
+- **Fail-safe:** every CPU switches to full-spectrum and everything is flushed once. It is the top rung of the
+  [posture ladder](#graduated-response): it stays until an operator steps it down (`kgmon posture set`) or the
+  module is unloaded.
 - User-controlled indices (`KG_IOC_GET_CPU_INFO`) go through `array_index_nospec()`.
 
 ### Module 5 — secure communication (`kg_comms.c`)
@@ -287,6 +303,48 @@ Init order (as `DriverEntry`): state → secure channel → mitigation engine �
   because uevents are world-readable) and the kernel log. Example udev consumer: `scripts/70-kernelguard.rules`.
 - Non-critical notifications are rate-limited (10/s sustained, burst 32); critical ones are never dropped.
   Kernel-log lines below *critical* are rate-limited too.
+
+---
+
+## Graduated response
+
+The Windows driver reacts to each alert the same way and has one fail-safe mode that lasts until unload. Here
+the reaction is a ladder (`kg_posture.c`), so one suspicious event costs less than a proven kernel patch and an
+operator can step back down after an investigation without unloading the module.
+
+| Posture | Meaning | Entered by |
+| --- | --- | --- |
+| `NORMAL` | baseline strategies, scans at their configured interval | load, decay, operator |
+| `ELEVATED` | scans (PCI, keyboard path, integrity) run **4× as often**; an immediate PCI/keyboard scan is queued | a critical cache-miss rate, an unauthorised bus master or keyboard handler, a PCI discrepancy, a suspicious module load |
+| `HIGH` | **every CPU held at full-spectrum**, a floor the PMU sampler cannot relax; with `auto_enforce=1` also the active enforcement of `enforce=1`; an immediate integrity pass | IDT / control-register / syscall-MSR tampering |
+| `FAIL-SAFE` | as HIGH, plus the fail-safe state of the Windows driver | a critical `.text` patch or input-callback hook, a corrupted policy state |
+
+**Raising is automatic and bounded.** `max_posture` (writable at run time) is the highest rung the module climbs
+by itself: `max_posture=0` keeps it alert-only, `1` never leaves ELEVATED, `2` never enters FAIL-SAFE. An operator
+can still set any posture. The posture is stored in the hashed policy table, so tampering with it is caught like
+any other policy change.
+
+**Lowering is deliberate.** ELEVATED decays to NORMAL after `posture_decay_s` seconds without another trigger
+(each trigger restarts the clock). HIGH and FAIL-SAFE never decay: they mean the kernel may be compromised.
+
+```sh
+kgmon posture                 # where are we, why, and how often are scans running
+kgmon posture set normal      # (root) after investigating; also: elevated, high, failsafe
+echo 2 | sudo tee /sys/module/kernelguard/parameters/max_posture
+```
+
+Decay and operator changes are announced with `ALERT_POSTURE_CHANGED` (`0x0032`) in the authenticated ring,
+so the audit trail shows who relaxed what and when. The alert is *info* for a decay and *warning* for an operator
+change. If the policy state itself was found corrupted, stepping down from HIGH or FAIL-SAFE is refused (`EUCLEAN`):
+the baseline strategies it would restore cannot be trusted, so unload and reload the module.
+
+**Why a floor:** before the ladder, an IDT-hook alert set every CPU to full-spectrum and the PMU sampler's relax
+step put each CPU back to its baseline within a few seconds. A reproduction of that failed before the change; the
+`posture` suite now checks that the floor holds (with the PMU sampler active, i.e. under KVM).
+
+**Cost:** ELEVATED and above quadruple the scan rate (never below 100 ms), which for the integrity pass means
+streaming the kernel text through the caches more often. Leave `posture_decay_s` at its default unless alerts on
+your workload are frequent and benign; then raise `pmu_crit` or lower `max_posture` instead of shortening it.
 
 ---
 
@@ -319,7 +377,8 @@ linux/
 ├── module/                        kernelguard.ko
 │   ├── kg.h                       master header (types, hot-path flush, prototypes)
 │   ├── kg_main.c                  module entry/exit, /dev/kernelguard, parameters      (driver_main.c)
-│   ├── kg_state.c                 stats, policy hash, kg_report, event router, fail-safe (shared_state.c)
+│   ├── kg_state.c                 stats, policy hash, kg_report, event router            (shared_state.c)
+│   ├── kg_posture.c               graduated response: posture ladder, decay, operator reset  (Linux only)
 │   ├── kg_pmu.c                   Module 1                                              (pmu_detection.c)
 │   ├── kg_hw.c                    Module 2, PCI/DMA                                     (hw_keylogger_detect.c)
 │   ├── kg_input.c                 Module 2 keyboard path + Module 3 input hooks         (…, kernel_integrity.c)
@@ -417,6 +476,8 @@ kgmon --syslog              also send to syslog (authpriv)
 kgmon --notify[=USER]       desktop notifications through notify-send (as root, USER selects the session)
 kgmon --max N | --new-only | --quiet
 kgmon status                driver state, per-CPU strategy table, counters
+kgmon posture               the response posture, what raised it, the effective scan intervals
+kgmon posture set LEVEL     (root) step it: normal | elevated | high | failsafe
 kgmon selftest              SHA-256 / HMAC known-answer tests
 kgmon run --sensitive -- CMD...
                             exec CMD with L1D flush, IBPB/STIBP, SSBD and core scheduling enabled where
@@ -460,7 +521,7 @@ lapped. (Under a four-writer flood with a live reader the suite saw zero HMAC fa
 
 ### Alert codes
 
-Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` are Linux additions.
+Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` and `0x0032` are Linux additions.
 
 | Code | Value | Module | Param1 / Param2 |
 | --- | --- | --- | --- |
@@ -480,6 +541,7 @@ Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` are Linux add
 | `ALERT_MODULE_LOADED` | `0x0024` | M3 | module name, bytes 0–7 / 8–15 |
 | `ALERT_SHARED_STATE_CORRUPT` | `0x0030` | M4 | 0 / 0 |
 | `ALERT_FAIL_SAFE_ENTERED` | `0x0031` | M4 | 0 / 0 |
+| `ALERT_POSTURE_CHANGED` | `0x0032` | M4 | `old<<32 \| new` posture / `why<<32 \| trigger alert` (why: 2 decay, 3 operator). Only decay and operator changes are announced; an automatic raise is already explained by the alert that caused it |
 
 ---
 
@@ -494,6 +556,8 @@ Values `0x0001–0x0031` are the Windows values. `0x0023–0x0024` are Linux add
 | `ioctl(KG_IOC_GET_HMAC_KEY, struct kg_hmac_key *)` | the per-boot 32-byte key (`CAP_SYS_ADMIN`) |
 | `ioctl(KG_IOC_GET_INFO, struct kg_info *)` | version, flags, counters |
 | `ioctl(KG_IOC_GET_CPU_INFO, struct kg_cpu_info *)` | per-CPU features, strategy, CAT plan (`cpu` clamped with `array_index_nospec`) |
+| `ioctl(KG_IOC_GET_POSTURE, struct kg_posture_info *)` | posture, ceiling, decay time, last trigger, effective scan intervals, times each posture was entered |
+| `ioctl(KG_IOC_SET_POSTURE, struct kg_posture_req *)` | set the posture (`CAP_SYS_ADMIN`); refused with `EUCLEAN` when stepping down from HIGH/FAIL-SAFE after the policy state was found corrupted |
 
 ---
 
@@ -506,8 +570,11 @@ Runtime-writable ones live in `/sys/module/kernelguard/parameters/`.
 | `enforce` | `0` | yes | allow active mitigation (BME clear, handler detach) |
 | `kbd_allow` | – | no | extra authorised input-handler names, comma separated |
 | `dma_allow` | – | no | extra authorised PCI devices: `SSSS:BB:DD.F` or `VVVV:DDDD` |
-| `hw_interval_ms` | `5000` | yes | PCI and keyboard-path re-scan interval |
-| `integrity_interval_ms` | `30000` | yes | Module 3 verification interval |
+| `auto_enforce` | `0` | yes | also take the active mitigation of `enforce=1` once the posture reaches HIGH |
+| `max_posture` | `3` | yes | highest posture the module raises by itself: 0 NORMAL (alerts only), 1 ELEVATED, 2 HIGH, 3 FAIL-SAFE |
+| `posture_decay_s` | `600` | yes | quiet seconds before ELEVATED falls back to NORMAL (`0` = never; HIGH and FAIL-SAFE never decay) |
+| `hw_interval_ms` | `5000` | yes | PCI and keyboard-path re-scan interval (÷4 while ELEVATED or above) |
+| `integrity_interval_ms` | `30000` | yes | Module 3 verification interval (÷4 while ELEVATED or above) |
 | `pmu`, `hw`, `input`, `integrity` | `1` | no | enable each monitor |
 | `pmu_period_l1d` / `pmu_period_llc` | `100000` / `20000` | no | events per counter overflow (min 1000) |
 | `pmu_window_ms` | `1000` | yes | sampling window (min 100) |
@@ -528,7 +595,7 @@ Runtime-writable ones live in `/sys/module/kernelguard/parameters/`.
   the NVIDIA proprietary driver and VirtualBox has ~250 modules and one module alone is ~100 MiB
   (text+data), so expect tens of MiB. `text_modules=0` limits the baseline to the kernel image; `text_max_mb`
   bounds the total.
-- **`.text` alerts** are critical and enter fail-safe. The classifier was checked against live ftrace
+- **`.text` alerts** are critical and enter fail-safe (set `max_posture=2` to stop the module going that far by itself). The classifier was checked against live ftrace
   (function tracer, 344 filtered functions), tracepoint jump labels, and the driver's own perf counters
   (912 patch sites accepted, 0 alerts). It has **not** been exercised against BPF/kprobe-heavy tooling,
   livepatch, or proprietary modules on real hardware; if you see a critical `TEXT_PATCH` that you can
@@ -551,9 +618,9 @@ KG_KVER=6.14.0-29-generic KG_KERNEL=/boot/vmlinuz-6.14.0-29-generic linux/tests/
 Distro images are often root-only; `apt-get download linux-image-$(uname -r)` and `dpkg-deb -x` give a
 readable copy (set `KG_KERNEL`). Tools: `qemu-system-x86_64`, `busybox`, `cpio`, `gcc`.
 
-**Result:** all 11 suites (208 checks) pass on **7.0.0-31-generic** and on **6.14.0-29-generic** guests, and
-the module builds warning-free (`W=1`) against the 6.8, 6.14, 6.17 and 7.0 header trees. `checkpatch.pl`
-reports no errors.
+**Result:** all 12 suites (276 checks) pass on a **7.0.0-31-generic** guest (re-run after the graduated-response
+change; the previous 11 suites also passed on 6.14.0-29), and the module builds warning-free (`W=1`) against every
+installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` reports no errors in the changed files.
 
 | Suite | Covers |
 | --- | --- |
@@ -567,6 +634,7 @@ reports no errors.
 | `monitor` | CSV format, syslog, `--max`, single-instance lock, `run --sensitive` (controls verified *in the exec'd child*) |
 | `deploy` | `kg-deploy.sh`/`kg-stop.sh` under busybox `ash` with a real `insmod` |
 | `lifecycle` | 16 load/unload cycles with a flat-memory slope check, cpuhp states released, hostile parameters, unload while PMU NMIs + tracing + keyboard events + an alert flood are running |
+| `posture` | automatic raises and the 4× scan rate; decay and its restart on a new trigger; HIGH holds every CPU at full-spectrum past several PMU windows; operator step-down restores the baseline and keeps the state hash valid; the `max_posture` cap (also at run time); a corrupted state cannot be reset away; `auto_enforce` detaches a rogue handler only once the posture reaches HIGH; every announcement authenticated |
 | `stress` | 4 concurrent alert writers vs. a live reader: zero HMAC failures, zero torn slots |
 
 Fixtures (`tests/vm/testmods/`): a rogue input handler and a tamper module (patches module/kernel text through

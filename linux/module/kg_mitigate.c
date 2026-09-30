@@ -166,7 +166,7 @@ static void kg_mit_store(int cpu, const struct kg_probe *p)
 	m = &kg_guard.cpu[cpu];
 	m->features = p->features;
 	m->base_strategy = p->strategy;
-	m->strategy = kg_guard.hdr.failsafe ? KG_STRAT_FULL : p->strategy;
+	m->strategy = kg_guard.hdr.posture >= KG_POSTURE_HIGH ? KG_STRAT_FULL : p->strategy;
 	m->flush_cost_ns = p->cost_ns;
 	m->cat_ways = p->cat_ways;
 	m->cat_sens_cbm = p->cat_sens_cbm;
@@ -191,13 +191,29 @@ static int kg_mit_cpu_online(unsigned int cpu)
  * Policy mutation.  Every change goes through the guard lock so the state
  * hash always matches the table it protects.
  *--------------------------------------------------------------------------*/
-void kg_mit_set_all(u8 strategy)
+/*
+ * Change the overall posture together with everything it implies, in one critical
+ * section so the state hash always matches the table it protects.
+ *
+ * HIGH and FAILSAFE hold every CPU at full-spectrum: that is a floor the PMU
+ * sampler's relax step (kg_mit_relax_cpu) cannot go below.  Coming back down from
+ * such a posture restores every CPU's baseline strategy; NORMAL <-> ELEVATED
+ * leaves the strategies alone, so a CPU the PMU sampler escalated stays escalated.
+ */
+void kg_mit_set_posture(u32 posture)
 {
 	int cpu;
 
 	kg_guard_lock_acquire();
-	for (cpu = 0; cpu < (int)kg_guard.hdr.ncpu; cpu++)
-		kg_guard.cpu[cpu].strategy = strategy;
+	if (posture >= KG_POSTURE_HIGH) {
+		for (cpu = 0; cpu < (int)kg_guard.hdr.ncpu; cpu++)
+			kg_guard.cpu[cpu].strategy = KG_STRAT_FULL;
+	} else if (kg_guard.hdr.posture >= KG_POSTURE_HIGH) {
+		for (cpu = 0; cpu < (int)kg_guard.hdr.ncpu; cpu++)
+			kg_guard.cpu[cpu].strategy = kg_guard.cpu[cpu].base_strategy;
+	}
+	kg_guard.hdr.posture = posture;
+	kg_guard.hdr.failsafe = posture == KG_POSTURE_FAILSAFE;
 	kg_guard_unlock_release();
 }
 
@@ -211,6 +227,7 @@ bool kg_mit_enter_failsafe(void)
 		return false;
 	}
 	kg_guard.hdr.failsafe = 1;
+	kg_guard.hdr.posture = KG_POSTURE_FAILSAFE;
 	for (cpu = 0; cpu < (int)kg_guard.hdr.ncpu; cpu++)
 		kg_guard.cpu[cpu].strategy = KG_STRAT_FULL;
 	kg_guard_unlock_release();
@@ -231,7 +248,7 @@ void kg_mit_relax_cpu(int cpu)
 	if (cpu < 0 || cpu >= (int)kg_guard.hdr.ncpu)
 		return;
 	kg_guard_lock_acquire();
-	if (!kg_guard.hdr.failsafe)
+	if (kg_guard.hdr.posture < KG_POSTURE_HIGH)
 		kg_guard.cpu[cpu].strategy = kg_guard.cpu[cpu].base_strategy;
 	kg_guard_unlock_release();
 }
@@ -331,6 +348,7 @@ int kg_mit_init(void)
 	kg_guard.hdr.abi = KG_ABI_VERSION;
 	kg_guard.hdr.ncpu = nr_cpu_ids;
 	kg_guard.hdr.failsafe = 0;
+	kg_guard.hdr.posture = KG_POSTURE_NORMAL;
 	kg_guard.cpu = kcalloc(nr_cpu_ids, sizeof(*kg_guard.cpu), GFP_KERNEL);
 	if (!kg_guard.cpu)
 		return -ENOMEM;

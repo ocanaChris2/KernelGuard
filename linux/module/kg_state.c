@@ -221,37 +221,27 @@ bool kg_sens_pfn_tagged(unsigned long pfn)
 EXPORT_SYMBOL_GPL(kg_sens_pfn_tagged);
 
 /*----------------------------------------------------------------------------
- * Fail-safe mode (Windows: EnterFailSafeMode).
+ * Fail-safe mode (Windows: EnterFailSafeMode) is the top rung of the posture
+ * ladder in kg_posture.c.
  *--------------------------------------------------------------------------*/
 bool kg_in_failsafe(void)
 {
 	return READ_ONCE(kg_guard.hdr.failsafe) != 0;
 }
 
-void kg_enter_failsafe(void)
-{
-	/* Flips hdr.failsafe together with the strategy table, atomically. */
-	if (!kg_mit_enter_failsafe())
-		return;
-
-	atomic64_or(KG_MIT_FAIL_SAFE, &kg_stats.active_mitigation_flags);
-	kg_mit_flush_all();
-
-	pr_crit("*** FAIL-SAFE MODE ENTERED - full-spectrum mitigation on every CPU ***\n");
-	kg_report(KG_ALERT_FAIL_SAFE_ENTERED, KG_LEVEL_CRITICAL, 0, 0,
-		  "fail-safe mode entered");
-}
-
 /*----------------------------------------------------------------------------
- * Cross-module event router (Windows: DispatchCrossModuleEvent, spec §7.2).
+ * Cross-module event router (Windows: DispatchCrossModuleEvent, spec 7.2).
  *
- *   M1 cache-miss anomaly  -> M4 escalate + flush the CPU and its SMT siblings
- *   M2 DMA violation       -> M4 flush
- *   M2 PCI discrepancy     -> M3 immediate keyboard-path scan
- *   M3 IDT/CR/MSR tamper   -> M4 full-spectrum on all CPUs
- *   M3 text/dispatch hook  -> fail-safe (M5 notification is sent by kg_report)
- *   M4 state corruption    -> fail-safe
+ *   M1 cache-miss anomaly  -> M4 escalate + flush the CPU and its SMT siblings;
+ *                             posture ELEVATED
+ *   M2 DMA violation       -> M4 flush; posture ELEVATED
+ *   M2 PCI discrepancy     -> M3 immediate keyboard-path scan; posture ELEVATED
+ *   M2 keyboard-path / BME -> posture ELEVATED
+ *   M3 IDT/CR/MSR tamper   -> posture HIGH (M4 full-spectrum on all CPUs, held)
+ *   M3 text/dispatch hook  -> posture FAILSAFE (M5 notification is sent by kg_report)
+ *   M4 state corruption    -> posture FAILSAFE
  *
+ * Every raise is bounded by the max_posture parameter (kg_posture.c).
  * Process context only.
  *--------------------------------------------------------------------------*/
 static void kg_dispatch(u32 type, u32 level, u64 p1, u64 p2)
@@ -267,33 +257,45 @@ static void kg_dispatch(u32 type, u32 level, u64 p1, u64 p2)
 				kg_mit_flush_cpu(cpu);
 				kg_mit_flush_siblings(cpu);
 			}
+			kg_posture_raise(KG_POSTURE_ELEVATED, type);
 		}
 		break;
 
 	case KG_ALERT_UNAUTHORIZED_DMA:
 		kg_mit_flush_cpu(raw_smp_processor_id());
+		kg_posture_raise(KG_POSTURE_ELEVATED, type);
 		break;
 
 	case KG_ALERT_PCI_DISCREPANCY:
 		kg_input_kick();
+		kg_posture_raise(KG_POSTURE_ELEVATED, type);
+		break;
+
+	case KG_ALERT_UNAUTHORIZED_KBD_FILTER:
+	case KG_ALERT_KBD_FILTER_NEUTRALIZED:
+	case KG_ALERT_DEVICE_BME_DISABLED:
+		kg_posture_raise(KG_POSTURE_ELEVATED, type);
+		break;
+
+	case KG_ALERT_MODULE_LOADED:
+		if (level >= KG_LEVEL_WATCH)            /* only a suspicious load, not every load */
+			kg_posture_raise(KG_POSTURE_ELEVATED, type);
 		break;
 
 	case KG_ALERT_IDT_HOOK:
 	case KG_ALERT_CTRL_REG_TAMPER:
-		if (level >= KG_LEVEL_CRITICAL) {
-			kg_mit_set_all(KG_STRAT_FULL);
-			kg_mit_flush_all();
-		}
+		if (level >= KG_LEVEL_CRITICAL)
+			kg_posture_raise(KG_POSTURE_HIGH, type);
 		break;
 
 	case KG_ALERT_TEXT_PATCH:
 	case KG_ALERT_DISPATCH_HOOK:
 		if (level >= KG_LEVEL_CRITICAL)
-			kg_enter_failsafe();
+			kg_posture_raise(KG_POSTURE_FAILSAFE, type);
 		break;
 
 	case KG_ALERT_SHARED_STATE_CORRUPT:
-		kg_enter_failsafe();
+		kg_posture_raise(KG_POSTURE_FAILSAFE, type);
 		break;
 
 	default:

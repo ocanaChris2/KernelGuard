@@ -41,6 +41,24 @@ MODULE_PARM_DESC(enforce,
 	"Take active mitigation (clear PCI bus mastering of unauthorised DMA devices, "
 	"detach unauthorised input handlers). Default 0: detect and report only.");
 
+bool kg_auto_enforce;
+module_param_named(auto_enforce, kg_auto_enforce, bool, 0644);
+MODULE_PARM_DESC(auto_enforce,
+	"Also take the active mitigation of enforce=1 once the response posture reaches HIGH "
+	"(an integrity alert), so a quiet system stays detect-only. Default 0.");
+
+unsigned int kg_max_posture = KG_POSTURE_FAILSAFE;
+module_param_named(max_posture, kg_max_posture, uint, 0644);
+MODULE_PARM_DESC(max_posture,
+	"Highest response posture the module raises by itself: 0 NORMAL (alerts only), 1 ELEVATED, "
+	"2 HIGH, 3 FAIL-SAFE (default). An operator can still set any posture. See kgmon posture.");
+
+unsigned int kg_posture_decay_s = 600;
+module_param_named(posture_decay_s, kg_posture_decay_s, uint, 0644);
+MODULE_PARM_DESC(posture_decay_s,
+	"Seconds without a new trigger before ELEVATED falls back to NORMAL (default 600, 0 = never, max 1000000). "
+	"HIGH and FAIL-SAFE never decay.");
+
 char kg_kbd_allow[256];
 module_param_string(kbd_allow, kg_kbd_allow, sizeof(kg_kbd_allow), 0444);
 MODULE_PARM_DESC(kbd_allow,
@@ -212,6 +230,24 @@ static long kg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			ret = -EFAULT;
 		return ret;
 	}
+	case KG_IOC_GET_POSTURE: {
+		struct kg_posture_info pi;
+
+		kg_posture_info(&pi);
+		return copy_to_user(uarg, &pi, sizeof(pi)) ? -EFAULT : 0;
+	}
+	case KG_IOC_SET_POSTURE: {
+		struct kg_posture_req rq;
+
+		/* The node is 0600, but do not rely on that alone (same as the key ioctl). */
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+		if (copy_from_user(&rq, uarg, sizeof(rq)))
+			return -EFAULT;
+		if (rq.flags)
+			return -EINVAL;
+		return kg_posture_set(rq.target);
+	}
 	default:
 		return -ENOTTY;
 	}
@@ -278,6 +314,7 @@ static int __init kg_init(void)
 		pr_err("mitigation engine init failed: %d\n", ret);
 		goto err_comms;
 	}
+	kg_posture_init();
 
 	if (p_integrity) {
 		ret = kg_integrity_init();
@@ -316,6 +353,7 @@ err_monitors:
 	kg_input_exit();
 	kg_hw_exit();
 	kg_integrity_exit();
+	kg_posture_exit();
 	kg_mit_exit();
 err_comms:
 	kg_comms_exit();
@@ -338,6 +376,7 @@ static void __exit kg_exit(void)
 	kg_input_exit();
 	kg_hw_exit();
 	kg_integrity_exit();
+	kg_posture_exit();
 	kg_mit_exit();
 	kg_comms_exit();
 	kg_state_exit();

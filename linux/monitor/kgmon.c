@@ -9,6 +9,7 @@
  *
  *   kgmon                  follow alerts (backlog first), verify every HMAC
  *   kgmon status           driver state, per-CPU mitigation table, counters
+ *   kgmon posture [set L]  graduated-response posture: show it, or step it (root)
  *   kgmon selftest         SHA-256 / HMAC-SHA256 known-answer tests
  *   kgmon run --sensitive -- CMD...
  *                          exec CMD with the kernel's native per-task
@@ -36,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -115,6 +117,30 @@ static const char *strategy_text(uint32_t s)
 	return s < sizeof(n) / sizeof(n[0]) ? n[s] : "?";
 }
 
+static const char *posture_text(uint32_t p)
+{
+	static const char *const n[KG_POSTURE_COUNT] = { "NORMAL", "ELEVATED", "HIGH", "FAIL-SAFE" };
+
+	return p < KG_POSTURE_COUNT ? n[p] : "?";
+}
+
+/* "normal", "elevated", "high", "failsafe" / "fail-safe", or 0-3. */
+static int parse_posture(const char *s)
+{
+	static const struct { const char *name; int v; } t[] = {
+		{ "normal", KG_POSTURE_NORMAL }, { "elevated", KG_POSTURE_ELEVATED },
+		{ "high", KG_POSTURE_HIGH }, { "failsafe", KG_POSTURE_FAILSAFE },
+		{ "fail-safe", KG_POSTURE_FAILSAFE },
+	};
+
+	for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++)
+		if (!strcasecmp(s, t[i].name))
+			return t[i].v;
+	if (s[0] >= '0' && s[0] < '0' + KG_POSTURE_COUNT && !s[1])
+		return s[0] - '0';
+	return -1;
+}
+
 /* Handler / module names travel in Param1|Param2 as 16 bytes of ASCII. */
 static void unpack_name(uint64_t p1, uint64_t p2, char out[17])
 {
@@ -145,6 +171,7 @@ static const char *alert_text(uint32_t t)
 	case KG_ALERT_MODULE_LOADED:           return "Kernel Module Loaded";
 	case KG_ALERT_SHARED_STATE_CORRUPT:    return "Driver State Corrupted";
 	case KG_ALERT_FAIL_SAFE_ENTERED:       return "CRITICAL: Fail-Safe Mode";
+	case KG_ALERT_POSTURE_CHANGED:         return "Response Posture Changed";
 	default:                               return "Unknown Alert";
 	}
 }
@@ -201,6 +228,11 @@ static void format_details(const struct kg_notification *n, char *out, size_t le
 	case KG_ALERT_CTRL_REG_TAMPER:
 		snprintf(out, len, "cpu %u  reg 0x%x  new 0x%" PRIx64,
 			 (unsigned)(p1 >> 32), (unsigned)(p1 & 0xffffffffu), p2);
+		break;
+	case KG_ALERT_POSTURE_CHANGED:
+		snprintf(out, len, "%s -> %s  (%s)", posture_text((unsigned)(p1 >> 32)),
+			 posture_text((unsigned)(p1 & 0xffffffffu)),
+			 (p2 >> 32) == KG_POSTURE_WHY_DECAY ? "quiet period elapsed" : "operator request");
 		break;
 	default:
 		snprintf(out, len, "Param1: 0x%" PRIx64 "  Param2: 0x%" PRIx64, p1, p2);
@@ -493,6 +525,12 @@ static int cmd_status(struct opts *o)
 	printf("  mode            : %s%s\n", info.flags & KG_INFO_ENFORCE ? "ENFORCE" : "detect-only",
 	       info.flags & KG_INFO_FAIL_SAFE ? "  *** FAIL-SAFE ***" : "");
 	printf("  state integrity : %s\n", info.flags & KG_INFO_INTEGRITY_OK ? "ok" : "CORRUPT");
+	{
+		struct kg_posture_info pi;
+
+		if (ioctl(c.fd, KG_IOC_GET_POSTURE, &pi) == 0)
+			printf("  posture         : %s  (details: kgmon posture)\n", posture_text(pi.posture));
+	}
 	printf("  modules         : pmu=%s  pci-ecam=%s  text=%s  input=%s\n",
 	       info.flags & KG_INFO_PMU_ACTIVE ? "on" : "off",
 	       info.flags & KG_INFO_ECAM_ACTIVE ? "on" : "off",
@@ -544,6 +582,67 @@ static int cmd_status(struct opts *o)
 	P(notifications_sent); P(notifications_dropped); P(fallback_signals_sent);
 	P(sens_page_count);
 #undef P
+	return 0;
+}
+
+/*
+ * `kgmon posture`            show the response posture and what is driving it
+ * `kgmon posture set LEVEL`  step the posture up or down (root)
+ */
+static int cmd_posture(struct opts *o, int argc, char **argv)
+{
+	struct conn c;
+	struct kg_posture_info pi;
+	char ts[48];
+
+	if (argc >= 1 && strcmp(argv[0], "set"))
+		die("usage: kgmon posture [set normal|elevated|high|failsafe]");
+	if (argc == 1 || argc > 2)
+		die("usage: kgmon posture set normal|elevated|high|failsafe");
+
+	conn_open(&c, o->device);
+
+	if (argc == 2) {
+		struct kg_posture_req rq = { 0 };
+		int want = parse_posture(argv[1]);
+
+		if (want < 0)
+			die("unknown posture '%s' (normal, elevated, high, failsafe)", argv[1]);
+		rq.target = (uint32_t)want;
+		if (ioctl(c.fd, KG_IOC_SET_POSTURE, &rq) < 0) {
+			if (errno == EUCLEAN)
+				die("refused: the module's policy state was found corrupted, so the baseline "
+				    "it would restore cannot be trusted; unload and reload kernelguard");
+			die("KG_IOC_SET_POSTURE: %s (root required)", strerror(errno));
+		}
+	}
+
+	if (ioctl(c.fd, KG_IOC_GET_POSTURE, &pi) < 0)
+		die("KG_IOC_GET_POSTURE: %s (module too old?)", strerror(errno));
+
+	ts_string(pi.since_ns, ts, sizeof(ts));
+	printf("posture          : %s  (since %s, entered %" PRIu64 "x)\n", posture_text(pi.posture), ts,
+	       (uint64_t)pi.entered[pi.posture < KG_POSTURE_COUNT ? pi.posture : 0]);
+	if (pi.last_trigger_ns) {
+		ts_string(pi.last_trigger_ns, ts, sizeof(ts));
+		printf("last trigger     : %s  at %s\n", alert_text(pi.last_trigger_alert), ts);
+	} else {
+		printf("last trigger     : none\n");
+	}
+	printf("automatic raises : up to %s", posture_text(pi.max_posture));
+	if (pi.decay_s)
+		printf("; ELEVATED falls back to NORMAL after %u s without a trigger\n", pi.decay_s);
+	else
+		printf("; ELEVATED never decays by itself\n");
+	printf("enforcement      : %s%s\n", pi.flags & KG_POSTURE_F_ENFORCING ? "ACTIVE" : "detect-only",
+	       pi.flags & KG_POSTURE_F_AUTO_ENFORCE ? " (auto_enforce: switches on at HIGH)" : "");
+	printf("scan intervals   : PCI/input %u ms, integrity %u ms\n", pi.hw_interval_ms, pi.integ_interval_ms);
+	if (pi.flags & KG_POSTURE_F_UNTRUSTED)
+		printf("WARNING          : the policy state was corrupted; the posture cannot be lowered, reload the module\n");
+	printf("entered          : normal %" PRIu64 "  elevated %" PRIu64 "  high %" PRIu64 "  fail-safe %" PRIu64 "\n",
+	       (uint64_t)pi.entered[0], (uint64_t)pi.entered[1], (uint64_t)pi.entered[2], (uint64_t)pi.entered[3]);
+
+	memset(c.key, 0, sizeof(c.key));
 	return 0;
 }
 
@@ -625,6 +724,8 @@ static void usage(FILE *f)
 "Commands:\n"
 "  (none) | watch        follow alerts from the driver (default)\n"
 "  status                show driver state, per-CPU mitigation table and counters\n"
+"  posture [set LEVEL]   show the response posture (normal, elevated, high, fail-safe)\n"
+"                        or, as root, step it up or down after an investigation\n"
 "  selftest              run SHA-256/HMAC known-answer tests and exit\n"
 "  run [--sensitive] [--] CMD...\n"
 "                        exec CMD with per-task L1D-flush / IBPB / SSBD / core\n"
@@ -687,6 +788,8 @@ int main(int argc, char **argv)
 
 		if (!strcmp(cmd, "status"))
 			return cmd_status(&o);
+		if (!strcmp(cmd, "posture"))
+			return cmd_posture(&o, argc - optind - 1, argv + optind + 1);
 		if (!strcmp(cmd, "selftest"))
 			return cmd_selftest();
 		if (strcmp(cmd, "watch")) {

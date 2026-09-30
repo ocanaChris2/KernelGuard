@@ -416,7 +416,7 @@ static void kg_scan_kbd(struct kg_kbd *k)
 	}
 
 	/* Enforcement is re-evaluated every scan, so a handler that re-attaches is dealt with again. */
-	if (kg_enforce && !kg_input_baselining) {
+	if (kg_enforcing() && !kg_input_baselining) {
 		for (i = 0; i < n; i++) {
 			u64 np[2];
 
@@ -475,7 +475,7 @@ static void kg_input_workfn(struct work_struct *w)
 	kg_input_scan_all();
 	if (!READ_ONCE(kg_input_stop))
 		queue_delayed_work(kg_wq, &kg_input_work,
-				   msecs_to_jiffies(max(kg_hw_interval_ms, 100U)));
+				   msecs_to_jiffies(kg_scan_ms(kg_hw_interval_ms)));
 }
 
 /*----------------------------------------------------------------------------
@@ -500,7 +500,7 @@ int kg_input_init(void)
 	pr_info("keyboard path: %u keyboard(s), %u handler name(s) in baseline\n", kg_nkbd, kg_nbase);
 
 	kg_input_running = true;
-	queue_delayed_work(kg_wq, &kg_input_work, msecs_to_jiffies(max(kg_hw_interval_ms, 100U)));
+	queue_delayed_work(kg_wq, &kg_input_work, msecs_to_jiffies(kg_scan_ms(kg_hw_interval_ms)));
 	return 0;
 }
 

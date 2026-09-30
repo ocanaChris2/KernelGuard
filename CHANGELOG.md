@@ -22,6 +22,21 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
   Dependabot keeps actions and CI tool pins current. The workflows are validated with `actionlint`;
   none has run on GitHub yet.
 
+- **Linux: graduated response.** A posture ladder (NORMAL < ELEVATED < HIGH < FAIL-SAFE) replaces the single
+  fixed reaction: `max_posture` bounds what the module raises by itself, ELEVATED decays after
+  `posture_decay_s`, HIGH and FAIL-SAFE are stepped down by an operator (`kgmon posture set`,
+  `KG_IOC_SET_POSTURE`) and announced with the new alert `POSTURE_CHANGED` (0x0032); `auto_enforce=1` switches
+  on active enforcement only once the posture reaches HIGH. New ioctls `KG_IOC_GET_POSTURE` /
+  `KG_IOC_SET_POSTURE` leave the existing structures untouched. New QEMU suite `posture` (68 checks).
+
+### Fixed
+
+- **Linux: the response to an IDT-hook or control-register alert did not last.** It set every CPU to
+  full-spectrum, and the PMU sampler put each CPU back to its baseline strategy a few seconds later. HIGH is now
+  a floor that the relax step respects.
+- **Linux: a second policy-state corruption would have gone unreported** after the first was answered, because
+  the once-only latch was never cleared (found by reading the code; no test can corrupt the table yet).
+
 ### Changed
 
 - SPDX identifiers in `linux/` normalized from the deprecated `GPL-2.0` to `GPL-2.0-only`.
