@@ -33,6 +33,7 @@ python3 tools/wdk_syntax_check.py   # windows/ sources type-check against the WD
 python3 tools/test_pe_authenticode.py   # windows/src/pe_authenticode.c against real signed binaries (add --sanitize)
 python3 tools/test_digest_table.py      # windows/src/digest_table.c against the generated table (add --sanitize)
 python3 tools/import_loldrivers.py --check   # is windows/src/vuln_driver_hashes.h (generated) out of date?
+python3 tools/test_blocklist_db.py      # tools/blocklist_db.py on a synthetic dataset (no network)
 reuse lint                 # licence headers / REUSE.toml
 markdownlint-cli2 "**/*.md"
 ```

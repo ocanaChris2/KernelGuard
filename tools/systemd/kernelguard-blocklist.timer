@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 KernelGuard contributors
+[Unit]
+Description=Refresh the KernelGuard blocklist database daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# run at the next login if the machine was off at the scheduled time
+Persistent=true
+
+[Install]
+WantedBy=timers.target
