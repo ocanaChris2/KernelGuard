@@ -24,6 +24,8 @@ The driver operates under a **zero-trust kernel assumption**: it cannot rely on 
 
 Not every documented feature is active in the current code. See [Known limitations](#known-limitations) and [what the current code means for a deployment](#what-the-current-code-means-for-a-deployment).
 
+Project documents: [Roadmap](ROADMAP.md) (what "ready" means and the gates to get there) · [Threat model](docs/THREAT_MODEL.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md).
+
 ---
 
 ## Table of Contents
@@ -502,7 +504,7 @@ Libraries, schools, town halls, clinics, internet cafés, hotel business centres
 
 **4. Operate.**
 
-- **Collect alerts where staff will see them.** On Linux, run `kgmon --syslog --log /var/log/kernelguard-alerts.csv` under the provided `kernelguard-monitor.service` and forward the journal or CSV to your log system; the udev rule logs critical alerts even if the monitor is dead. On Windows the monitor cannot do this yet: keep the pilot to staff-only sessions and use *Save Log*, or add Event Log reporting before scaling out.
+- **Collect alerts where staff will see them.** On Linux, run `kgmon --syslog --log /var/log/kernelguard-alerts.csv` under the provided `kernelguard-monitor.service` and forward the journal or CSV to your log system; the udev rule logs critical alerts even if the monitor is dead. To page someone, or to escalate an alert that repeats or that nobody acknowledged, add an [escalation policy](linux/README.md#escalation-policy). On Windows the monitor cannot do this yet: keep the pilot to staff-only sessions and use *Save Log*, or add Event Log reporting before scaling out.
 - **Treat a missing monitor or module as an alert.** A compromised kernel can suppress notifications, and the sequence-number check only works while the monitor is running.
 
 Respond by alert type:

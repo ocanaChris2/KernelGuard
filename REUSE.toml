@@ -21,6 +21,7 @@ path = [
   "build.cmd",
   "kgbuild/**",
   "tools/**",
+  "docs/**",
   "*.md",
   ".markdownlint.json",
   ".markdownlint-cli2.jsonc",
