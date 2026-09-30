@@ -64,5 +64,14 @@ typedef struct _SHARED_MEM_REGION {
 #define ALERT_IDT_HOOK                  0x0020UL
 #define ALERT_DISPATCH_HOOK             0x0021UL
 #define ALERT_TEXT_PATCH                0x0022UL
+#define ALERT_MODULE_LOADED             0x0024UL    // lock mode, or a driver whose file could not be read
+#define ALERT_VULN_DRIVER               0x0025UL    // a denied (known-vulnerable or malicious) driver is loaded
+#define ALERT_DRIVER_BLOCKED            0x0026UL    // Linux only: the Windows driver cannot refuse a load
+#define ALERT_LOAD_POLICY               0x0027UL    // audit of the OS's own driver-load defences
 #define ALERT_SHARED_STATE_CORRUPT      0x0030UL
 #define ALERT_FAIL_SAFE_ENTERED         0x0031UL
+
+// ALERT_LOAD_POLICY Param1: weaknesses found (0 = none); the Linux bits are below 0x100.
+#define KG_LP_TESTSIGNING               0x0100UL    // test signing on, or code integrity off
+#define KG_LP_NO_HVCI                   0x0200UL    // memory integrity (HVCI) is off
+#define KG_LP_NO_BLOCKLIST              0x0400UL    // Microsoft vulnerable-driver blocklist disabled

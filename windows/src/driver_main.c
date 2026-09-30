@@ -9,6 +9,7 @@
 //   4. Start hardware keylogger detection (Module 2 init)
 //   5. Start PMU detection & RDTSC monitoring (Module 1 init)
 //   6. Initialize secure Ring 0→Ring 3 comms channel (Module 5 init)
+//   6b. Start the driver-load guard (Module 3.4): its alerts travel over that channel
 //   7. Create device object for user-mode shared-memory mapping requests
 //
 // The driver is designed as a boot-start service (SERVICE_BOOT_START in the
@@ -111,7 +112,8 @@ static VOID ScpdDriverUnload(PDRIVER_OBJECT DriverObject)
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
                "[KG] Unloading...\n");
 
-    // Reverse initialization order: M5 → M1 → M2 → M3 → M4
+    // Reverse initialization order: M3.4 → M5 → M1 → M2 → M3 → M4
+    DriverLoadGuardUninitialize();
     SecureCommUninitialize();
     PmuUninitialize();
     HwKeyloggerUninitialize();
@@ -195,6 +197,15 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         return st;
     }
 
+    // ── Step 5b: Driver-load guard (Module 3.4, "bring your own vulnerable driver") ──
+    // After the secure channel, because everything it finds is reported through it.
+    // Non-fatal: without it the rest of the driver still protects the machine.
+    st = DriverLoadGuardInitialize(RegistryPath);
+    if (!NT_SUCCESS(st)) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                   "[KG] DriverLoadGuardInitialize: 0x%08X (non-fatal)\n", st);
+    }
+
     // ── Step 6: Create device object ─────────────────────────────────────────
     UNICODE_STRING devName;
     RtlInitUnicodeString(&devName, DEVICE_NAME);
@@ -209,6 +220,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     if (!NT_SUCCESS(st)) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                    "[KG] IoCreateDevice failed: 0x%08X\n", st);
+        DriverLoadGuardUninitialize();
         SecureCommUninitialize();
         PmuUninitialize();
         KernelIntegrityUninitialize();
@@ -222,6 +234,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     st = IoCreateSymbolicLink(&symlinkName, &devName);
     if (!NT_SUCCESS(st)) {
         IoDeleteDevice(g_DeviceObject);
+        DriverLoadGuardUninitialize();
         SecureCommUninitialize();
         PmuUninitialize();
         KernelIntegrityUninitialize();
