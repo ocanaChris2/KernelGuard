@@ -49,7 +49,7 @@ jobs:
           python3 tools/changelog_notes.py "$version" > notes.md
           ls -l dist
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*
 
