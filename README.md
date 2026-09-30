@@ -557,7 +557,7 @@ KernelGuard/
 │   │   └── KernelGuard.vcxproj               MSBuild driver project (WDM, DynamicLibrary+.sys)
 │   ├── usermode/                             Monitor
 │   │   ├── kg_shared.h                       IOCTL codes + shared structures (kernel + user)
-│   │   ├── main.c                            WinMain, tray icon, message pump
+│   │   ├── main.c                            WinMain, tray icon, message pump, Application event log
 │   │   ├── driver_comm.c / .h                Device open, IOCTL, HMAC verify, polling thread
 │   │   ├── log_window.c / .h                 Modeless alert log dialog (ListView, Save Log)
 │   │   ├── resource.h                        Resource IDs
@@ -574,6 +574,13 @@ KernelGuard/
 │
 ├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
 ├── kgbuild/                                  Code behind build.py: linux.py and windows.py, plus the shared flow
+├── tools/                                    version.py (VERSION and its copies), changelog_notes.py, wdk_syntax_check.py
+├── docs/THREAT_MODEL.md                      Assets, adversaries, assumptions, coverage, non-goals
+├── ROADMAP.md, CHANGELOG.md                  Stages and gates; what changed
+├── SECURITY.md, CONTRIBUTING.md              Reporting a vulnerability; how to work on it
+├── LICENSE, LICENSES/, REUSE.toml            Licence per directory (linux/ GPL-2.0-only, the rest MIT)
+├── VERSION                                   The single version number
+├── .github/                                  CI workflows (lint, linux, codeql, windows, release), templates, Dependabot
 └── LITERATURE_PRINCIPLES.md                  How to read and map the technical literature
 ```
 
