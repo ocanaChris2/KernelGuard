@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_test_tamper.c - TEST FIXTURE, loaded only inside the throw-away VM guest.
  *

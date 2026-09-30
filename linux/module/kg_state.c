@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_state.c - global state, alert reporting and cross-module event dispatch.
  * Counterpart of windows/src/shared_state.c.

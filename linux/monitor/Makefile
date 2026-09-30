@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 # User-space monitor (kgmon).
 #
 #   make            build ./kgmon

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_mitigate.c - Module 4: cache / microarchitectural mitigation engine.
  * Counterpart of windows/src/cache_mitigation.c and windows/src/asm/verw_flush.asm.

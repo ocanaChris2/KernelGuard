@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_hw.c - Module 2 (hardware half): PCIe discovery, OS/hardware cross-check
  * and DMA-exposure audit.  Counterpart of the PCI/VT-d parts of

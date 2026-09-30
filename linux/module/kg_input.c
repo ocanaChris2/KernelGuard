@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_input.c - Module 2 (keyboard-path half) and the input-path part of
  * Module 3.  Counterpart of PciDetectDiscrepancies / NeutralizeKbdFilterDriver

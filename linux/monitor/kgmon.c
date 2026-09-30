@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kgmon.c - KernelGuard monitor for Linux.
  * Counterpart of windows/usermode/{main,driver_comm,log_window}.c.

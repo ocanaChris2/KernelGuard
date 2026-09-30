@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_integrity.c - Module 3: kernel integrity and hook detection.
  * Counterpart of windows/src/kernel_integrity.c.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * specget - print the per-task speculation / SMT controls of the calling task.
  * Used by the monitor test to prove that `kgmon run --sensitive` really left the

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * kg.h - internal master header of the KernelGuard Linux module.
  * Counterpart of windows/src/KernelGuard.h.

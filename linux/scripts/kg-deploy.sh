@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # kg-deploy.sh - build / sign / load / persist KernelGuard on Linux.
 # Counterpart of windows/scripts/Deploy-KernelGuard.ps1.

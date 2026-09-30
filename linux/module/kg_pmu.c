@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_pmu.c - Module 1: side-channel attack detection through the PMU.
  * Counterpart of windows/src/pmu_detection.c.

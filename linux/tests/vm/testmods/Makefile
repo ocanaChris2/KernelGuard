@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 # Module.symvers of kernelguard.ko, so fixtures can link against its exported symbols

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_comms.c - Module 5: secure kernel -> user communication.
  * Counterpart of windows/src/secure_comms.c.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kg_main.c - module entry/exit and the /dev/kernelguard character device.
  * Counterpart of windows/src/driver_main.c.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Runs the KernelGuard monitor as a service.  Install with:
 #   sudo install -m 0755 monitor/kgmon /usr/local/sbin/kgmon

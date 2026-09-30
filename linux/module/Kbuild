@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
 # Kbuild file for the KernelGuard Linux module (kernelguard.ko).
 # Build with the Makefile in this directory (or `make -C linux`).
 
