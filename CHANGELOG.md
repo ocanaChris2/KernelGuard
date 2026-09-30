@@ -21,7 +21,15 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
   source tarball, static `kgmon`, SPDX SBOM, checksums, provenance) and a manual `windows` build.
   Dependabot keeps actions and CI tool pins current. The workflows are validated with `actionlint`;
   none has run on GitHub yet.
-
+- **Linux: alert escalation policy in `kgmon`.** `/etc/kernelguard/policy.conf` (or `--policy FILE`) maps alerts to
+  actions and escalates an incident that repeats (`repeat=N/SEC`) or stays unacknowledged (`unacked=SEC`); new
+  commands `kgmon ack` and `kgmon policy check`. Actions run without a shell, with a minimal environment, in their
+  own process group, killed at their timeout; policy and action files must not be writable by others; a
+  notification that fails its HMAC only raises `FORGED` and never selects an action. `kgmon` speaks `sd_notify`
+  (`READY`, `WATCHDOG`, `STOPPING`), and the unit is now `Type=notify` with `WatchdogSec=30`. Example policy and
+  wall / webhook / mail actions in `linux/scripts/`, installed inactive by `kg-deploy.sh persist`. New QEMU suite
+  `escalate` (52 checks) and unit tests in `kgmon selftest`.
+- `ROADMAP.md` (lab, pilot and production stages with checkable gates) and `docs/THREAT_MODEL.md`.
 - **Linux: graduated response.** A posture ladder (NORMAL < ELEVATED < HIGH < FAIL-SAFE) replaces the single
   fixed reaction: `max_posture` bounds what the module raises by itself, ELEVATED decays after
   `posture_decay_s`, HIGH and FAIL-SAFE are stepped down by an operator (`kgmon posture set`,
@@ -39,6 +47,8 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
 
 ### Changed
 
+- `kgmon` no longer ignores `SIGCHLD`: helper processes (desktop notifications, policy actions) are tracked, reaped
+  every poll, capped at 32, and killed with their process group when they overrun their timeout.
 - SPDX identifiers in `linux/` normalized from the deprecated `GPL-2.0` to `GPL-2.0-only`.
 - README corrected against the Windows source: RDTSC/CR4.TSD handling, PMU alert codes and the
   DMA half of Module 2 are documented as inactive; removed the CMake section (no CMake files exist).

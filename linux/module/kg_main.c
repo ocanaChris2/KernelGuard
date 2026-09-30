@@ -113,6 +113,9 @@ static int kg_inject_set(const char *val, const struct kernel_param *kp)
 
 static const struct kernel_param_ops kg_inject_ops = { .set = kg_inject_set };
 module_param_cb(test_inject, &kg_inject_ops, NULL, 0200);
+
+/* echo 1 > .../test_bad_hmac: every notification published from now on carries a wrong HMAC. */
+module_param_named(test_bad_hmac, kg_test_bad_hmac, bool, 0644);
 #endif
 
 /*----------------------------------------------------------------------------

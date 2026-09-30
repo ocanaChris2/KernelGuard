@@ -92,6 +92,9 @@ extern unsigned int kg_max_posture;     /* automatic raises stop at this posture
 extern unsigned int kg_posture_decay_s; /* ELEVATED -> NORMAL after this many quiet seconds */
 extern char kg_kbd_allow[];             /* extra allowed input handler names   */
 extern char kg_dma_allow[];             /* extra allowed PCI devices           */
+#ifdef KG_TESTHOOKS
+extern bool kg_test_bad_hmac;           /* test builds only: publish notifications with a wrong HMAC */
+#endif
 extern unsigned int kg_hw_interval_ms;
 extern unsigned int kg_integ_interval_ms;
 extern struct workqueue_struct *kg_wq;

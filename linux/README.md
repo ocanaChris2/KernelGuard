@@ -37,6 +37,7 @@ Each such case is replaced by the mechanism Linux actually supports, and every d
 - [Secure Boot and module signing](#secure-boot-and-module-signing)
 - [Deploy](#deploy)
 - [The monitor: `kgmon`](#the-monitor-kgmon)
+- [Escalation policy](#escalation-policy)
 - [Alert protocol](#alert-protocol)
 - [ioctl and mmap reference](#ioctl-and-mmap-reference)
 - [Module parameters](#module-parameters)
@@ -94,10 +95,12 @@ from two perf counters per CPU, and taints the kernel (out-of-tree + unsigned un
 | **M4 CAT** | Programs `PQR_ASSOC` / `L3_MASKn` | Capability probe + the same partition plan; applied through **resctrl** | resctrl owns those MSRs |
 | **M4 sensitive processes** | Page registry + a context-switch hook that nothing registers | `kg_sens_alloc()/kg_sens_free()` registry (exported) and `kgmon run --sensitive` (L1D flush, IBPB/STIBP, SSBD, core scheduling) | The kernel already has per-task controls for exactly this |
 | **M4 shared-state hash** | Hashes counters that change on every alert | Hash covers the policy table only; counters live outside it | Windows' `VerifySharedStateIntegrity` fails, and enters fail-safe, as soon as anything happens after load |
+| **Response to alerts** | One fixed reaction per alert; fail-safe lasts until the driver is unloaded | A [posture ladder](#graduated-response) (NORMAL, ELEVATED, HIGH, FAIL-SAFE): bounded by `max_posture`, ELEVATED decays, HIGH and FAIL-SAFE are stepped down by an operator and audited | The Windows fail-safe is all-or-nothing and irreversible. (An earlier Linux revision had a fixed reaction too, and its IDT-hook response was undone by the PMU sampler; see the changelog) |
 | **M5 ring** | MDL-mapped section, writable mapping, publish race between writers | One page, **read-only** `mmap`, seqlock-style slots (`magic` = 0 while rewritten), `poll()` wake-up | see [Alert protocol](#alert-protocol) |
 | **M5 key** | `RDTSC ⊕ system time` | `get_random_bytes()` | — |
 | **M5 fallback** | Write an alert code to MSR `0x150` | **uevent** (`KOBJ_CHANGE`) + kernel log | `0x150` is `#GP` on most CPUs, has no reader, and an implemented-but-unrelated MSR would be corrupted. uevents reach udev/systemd with no polling |
-| **Monitor** | Tray icon, balloon, log window | `kgmon`: stdout, CSV log (same columns), syslog, `notify-send`, `status`, `run` | — |
+| **Monitor** | Tray icon, balloon, log window | `kgmon`: stdout, CSV log (same columns), syslog, `notify-send`, `status`, `posture`, `ack`, `run` | — |
+| **Escalation** | none: the monitor shows a balloon | An [escalation policy](#escalation-policy): rules run actions (wall, webhook, mail, anything) and escalate when an incident repeats or stays unacknowledged; forged notifications never select an action; `sd_notify` watchdog | An unattended machine needs its alerts to reach a person, and to reach a *second* person when the first does not react |
 | **Install** | `windows/scripts/Deploy-KernelGuard.ps1`, test-signing | `scripts/kg-deploy.sh`, Secure Boot MOK signing | — |
 | **Emergency stop** | `windows/scripts/stop_driver.bat` | `scripts/kg-stop.sh` | — |
 | **Boot start** | INF `SERVICE_SYSTEM_START` | `persist` → `modules-load.d` | — |
@@ -388,11 +391,13 @@ linux/
 │   └── Kbuild, Makefile
 ├── monitor/                       kgmon                                                  (usermode/)
 │   ├── kgmon.c, kg_hmac.c/.h      monitor + self-contained SHA-256/HMAC
+│   ├── kg_policy.c/.h             escalation policy engine (parser, incidents, escalation; unit-tested)
 │   └── Makefile
 ├── scripts/
 │   ├── kg-deploy.sh               preflight / build / sign / install / persist          (Deploy-KernelGuard.ps1)
 │   ├── kg-stop.sh                 emergency stop                                         (stop_driver.bat)
 │   ├── kernelguard-monitor.service, 70-kernelguard.rules
+│   ├── policy.conf.example        escalation policy, actions/kg-action-{wall,webhook,mail}.sh
 └── tests/vm/                      QEMU/KVM test rig, guest tests, helpers and fixtures
 ```
 
@@ -478,7 +483,10 @@ kgmon --max N | --new-only | --quiet
 kgmon status                driver state, per-CPU strategy table, counters
 kgmon posture               the response posture, what raised it, the effective scan intervals
 kgmon posture set LEVEL     (root) step it: normal | elevated | high | failsafe
-kgmon selftest              SHA-256 / HMAC known-answer tests
+kgmon ack                   acknowledge the alerts seen so far (see Escalation policy)
+kgmon policy check [FILE]   validate an escalation policy and exit
+kgmon --policy FILE | --no-policy   the escalation policy (default /etc/kernelguard/policy.conf when present)
+kgmon selftest              SHA-256 / HMAC known-answer tests and the escalation-engine unit tests
 kgmon run --sensitive -- CMD...
                             exec CMD with L1D flush, IBPB/STIBP, SSBD and core scheduling enabled where
                             the kernel supports them (each control reports enabled / why not)
@@ -493,6 +501,92 @@ Example output:
 
 The monitor refuses to run twice (a lock file), tells lapped-ring entries apart from forgeries, and reports an
 unreadable slot as a possible tamper instead of an HMAC failure.
+
+---
+
+## Escalation policy
+
+`kgmon` can do more than print: an optional policy file turns alerts into **actions** (a wall message, a chat
+webhook, a mail) and *escalates* them, running a second set of actions when an incident keeps coming back or
+when nobody has looked at it. The engine is `monitor/kg_policy.c`; the example is
+[`scripts/policy.conf.example`](scripts/policy.conf.example).
+
+```text
+action wall     /usr/local/lib/kernelguard/actions/kg-action-wall.sh
+action webhook  timeout=15 /usr/local/lib/kernelguard/actions/kg-action-webhook.sh
+action mail     timeout=30 /usr/local/lib/kernelguard/actions/kg-action-mail.sh
+
+rule hardware  alert=UNAUTHORIZED_KBD_FILTER,UNAUTHORIZED_DMA,PCI_DISCREPANCY level=warning do=wall repeat=3/300 unacked=600 then=webhook,mail
+rule kernel    alert=TEXT_PATCH,IDT_HOOK,FAIL_SAFE_ENTERED level=critical throttle=300 do=webhook,mail,wall
+rule integrity alert=FORGED,TAMPER,OVERRUN level=warning throttle=0 do=webhook,mail
+```
+
+| Key | Meaning |
+| --- | --- |
+| `alert=` | alert names (the table above without `ALERT_`, plus `FORGED`, `TAMPER`, `OVERRUN`), `0xNNNN` codes, or `*` |
+| `level=` | minimum level: `info`, `warning`, `critical`, `forged` |
+| `do=` | actions run when the incident is first seen, and again after `throttle=` seconds (default 60; `0` = every alert) |
+| `repeat=N/SEC` | escalate when the same incident arrives *N* times within *SEC* seconds |
+| `unacked=SEC` | escalate when the incident is still unacknowledged after *SEC* seconds |
+| `then=` | the actions an escalation runs, **once per incident** |
+| `reset=` | seconds of silence after which an incident is forgotten (default 3600) |
+
+An **incident** is one rule × alert type × the alert's first parameter (offender, address, device), so two
+different rogue handlers are two incidents. `kgmon ack` acknowledges every alert seen so far: `unacked=`
+escalation stops for them, and the same alert appearing later is a *new* incident. All matching rules apply.
+
+```sh
+kgmon policy check /etc/kernelguard/policy.conf     # names the file, line and reason of any mistake
+sudo systemctl restart kernelguard-monitor
+kgmon ack                                           # "I have looked at everything so far"
+```
+
+**What an action gets.** Actions run **without a shell**, from an absolute path, in their own process group, with
+stdin from `/dev/null`, stdout and stderr in the journal, and an environment of nothing but `PATH` and:
+`KG_ALERT`, `KG_ALERT_CODE`, `KG_TITLE`, `KG_LEVEL`, `KG_LEVEL_NUM`, `KG_SEQ`, `KG_TIME` (UTC), `KG_DETAILS`,
+`KG_PARAM1`, `KG_PARAM2`, `KG_RULE`, `KG_ACTION`, `KG_TIER` (`0` do, `1` escalated), `KG_COUNT`, `KG_AGE_S`,
+`KG_HOST`. The monitor's own environment (tokens, `NOTIFY_SOCKET`…) is not passed on. An action that runs past its
+`timeout=` (default 10 s) is killed **with everything it started**.
+
+Ready-made actions live in [`scripts/actions/`](scripts/actions/) (`persist` installs them to
+`/usr/local/lib/kernelguard/actions/`): `kg-action-wall.sh`, `kg-action-webhook.sh` (URL read from the root-only
+`/etc/kernelguard/webhook.url`, JSON built with proper escaping) and `kg-action-mail.sh` (recipients from
+`/etc/kernelguard/mail.to`). Anything else that reads `KG_*` works.
+
+Safety properties (each is exercised by the `escalate` suite unless it says otherwise):
+
+- The policy file must be a regular file owned by root (or the caller) and not writable by group or others; so must
+  every action program. A policy that does not load stops the monitor, so a broken file never means
+  "silently not escalating".
+- A notification whose **HMAC fails is never matched by content**: it raises the pseudo alert `FORGED` with details
+  the sender did not choose, so a forged "all clear" or forged "TEXT_PATCH" cannot steer an action (the suite
+  publishes a real notification with a wrong HMAC through a test-build switch). Lost notifications (`OVERRUN`) and
+  unreadable or out-of-sequence slots (`TAMPER`) are alerts of their own; those two are unit-tested in the engine
+  only, because the suite cannot lap the ring or corrupt a slot while `kgmon` reads it.
+- At most 32 helper processes exist at once; beyond that actions are dropped and logged, so an alert flood cannot
+  fork-bomb the machine (the cap itself is by inspection, not tested). Children are reaped every 150 ms; the suite
+  checks there are no zombies.
+- `--once` never runs actions (it would replay old alerts).
+- Under systemd the monitor speaks `sd_notify`: `READY=1`, `WATCHDOG=1` at half of `WatchdogSec` (30 s in the
+  provided unit) and `STOPPING=1`, so a hung monitor is restarted.
+
+Limits, so nobody is surprised:
+
+- Incident state lives in the monitor's memory. After a restart, alerts still in the 16-slot ring are replayed
+  as new (use `--new-only` to skip them) and a pending escalation timer starts over.
+- `kgmon ack` is global (everything so far), not per incident, and per host.
+- Delivery is best effort: an action that fails is logged, not retried. Pair it with the syslog/CSV sinks and the
+  udev rule, which work when the network or the monitor does not.
+- The provided unit is sandboxed (`AF_UNIX` only, few capabilities) and the actions inherit that. For webhook or
+  mail over the network, and for `wall`, add a drop-in (**written from the documentation, not tested on a live
+  systemd**):
+
+  ```ini
+  # /etc/systemd/system/kernelguard-monitor.service.d/actions.conf
+  [Service]
+  RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+  SupplementaryGroups=tty
+  ```
 
 ---
 
@@ -618,7 +712,7 @@ KG_KVER=6.14.0-29-generic KG_KERNEL=/boot/vmlinuz-6.14.0-29-generic linux/tests/
 Distro images are often root-only; `apt-get download linux-image-$(uname -r)` and `dpkg-deb -x` give a
 readable copy (set `KG_KERNEL`). Tools: `qemu-system-x86_64`, `busybox`, `cpio`, `gcc`.
 
-**Result:** all 12 suites (276 checks) pass on a **7.0.0-31-generic** guest (re-run after the graduated-response
+**Result:** all 13 suites (328 checks) pass on a **7.0.0-31-generic** guest (re-run after the graduated-response
 change; the previous 11 suites also passed on 6.14.0-29), and the module builds warning-free (`W=1`) against every
 installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` reports no errors in the changed files.
 
@@ -635,6 +729,7 @@ installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` report
 | `deploy` | `kg-deploy.sh`/`kg-stop.sh` under busybox `ash` with a real `insmod` |
 | `lifecycle` | 16 load/unload cycles with a flat-memory slope check, cpuhp states released, hostile parameters, unload while PMU NMIs + tracing + keyboard events + an alert flood are running |
 | `posture` | automatic raises and the 4× scan rate; decay and its restart on a new trigger; HIGH holds every CPU at full-spectrum past several PMU windows; operator step-down restores the baseline and keeps the state hash valid; the `max_posture` cap (also at run time); a corrupted state cannot be reset away; `auto_enforce` detaches a rogue handler only once the posture reaches HIGH; every announcement authenticated |
+| `escalate` | policy validation (line numbers, writable file or program refused); level filter; base action with the right environment and none of the caller's; throttle; escalation by repetition and by age; `ack`; a repeat after an ack is a new incident; an overrunning action and its child killed at the timeout; no zombies; `--once` runs nothing; a notification with a wrong HMAC only raises `FORGED` and never matches its content; a broken policy stops the monitor; `sd_notify` READY/WATCHDOG/STOPPING |
 | `stress` | 4 concurrent alert writers vs. a live reader: zero HMAC failures, zero torn slots |
 
 Fixtures (`tests/vm/testmods/`): a rogue input handler and a tamper module (patches module/kernel text through

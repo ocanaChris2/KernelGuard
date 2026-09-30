@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# KernelGuard alert escalation policy for kgmon.
+#
+#   sudo install -d -m 0755 /etc/kernelguard
+#   sudo install -m 0640 policy.conf.example /etc/kernelguard/policy.conf    # owned by root, never group/world writable
+#   kgmon policy check                                                       # validates it, names the line of any mistake
+#   sudo systemctl restart kernelguard-monitor
+#
+# kgmon reads /etc/kernelguard/policy.conf when it exists (--policy FILE picks another one,
+# --no-policy ignores it).  A policy that does not load stops the monitor: it never quietly
+# stops escalating.
+#
+# Format (one directive per line, '#' comments, "double quotes" group words):
+#   action NAME [timeout=SEC] /absolute/program [ARG...]
+#   rule   NAME [alert=LIST] [level=LEVEL] [throttle=SEC] do=ACTIONS
+#               [repeat=N/SEC] [unacked=SEC] [then=ACTIONS] [reset=SEC]
+#
+#   alert=     alert names without the ALERT_ prefix (TEXT_PATCH, PCI_DISCREPANCY, ... as in the README's
+#              alert table, plus FORGED, TAMPER, OVERRUN), 0xNNNN codes, or * for any
+#   level=     minimum level: info | warning | critical | forged
+#   throttle=  seconds during which a repeat of the same incident does not run "do" again (default 60)
+#   repeat=    N/SEC  escalate when the same incident arrives N times within SEC seconds
+#   unacked=   SEC    escalate when the incident is still unacknowledged after SEC seconds
+#   then=      actions an escalation runs, once per incident
+#   reset=     seconds of silence after which an incident is forgotten (default 3600)
+#
+# An incident is one rule x alert type x first parameter (the offender, address or device).
+# `kgmon ack` acknowledges every alert seen so far; a repeat after that is a new incident.
+#
+# Actions are run WITHOUT a shell, with a minimal environment (PATH and KG_*) and their own
+# process group, which is killed when the timeout runs out.  They must be absolute paths owned
+# by root and not writable by anyone else.  What an action can read:
+#   KG_ALERT KG_ALERT_CODE KG_TITLE KG_LEVEL KG_LEVEL_NUM KG_SEQ KG_TIME KG_DETAILS
+#   KG_PARAM1 KG_PARAM2 KG_RULE KG_ACTION KG_TIER (0 = do, 1 = escalated) KG_COUNT KG_AGE_S KG_HOST
+#
+# Notifications whose HMAC does not verify never reach a rule's alert types: they raise the
+# pseudo alert FORGED instead, with details the sender did not choose.  kgmon also raises
+# OVERRUN (notifications were lost: somebody may be flooding the ring to hide one) and TAMPER
+# (a published slot is unreadable or out of sequence).
+
+action wall     /usr/local/lib/kernelguard/actions/kg-action-wall.sh
+action webhook  timeout=15 /usr/local/lib/kernelguard/actions/kg-action-webhook.sh
+action mail     timeout=30 /usr/local/lib/kernelguard/actions/kg-action-mail.sh
+
+# Something is reading the keyboard or moving data behind the OS's back: tell whoever is at the
+# console; if it keeps happening, or nobody has run `kgmon ack` within 10 minutes, page.
+rule hardware  alert=UNAUTHORIZED_KBD_FILTER,KBD_FILTER_NEUTRALIZED,UNAUTHORIZED_DMA,PCI_DISCREPANCY,DEVICE_BME_DISABLED level=warning do=wall repeat=3/300 unacked=600 then=webhook,mail
+
+# The kernel itself was patched or its policy state is corrupt: everybody, every time (5 min apart).
+rule kernel    alert=TEXT_PATCH,IDT_HOOK,DISPATCH_HOOK,CTRL_REG_TAMPER,SHARED_STATE_CORRUPT,FAIL_SAFE_ENTERED level=critical throttle=300 do=webhook,mail,wall
+
+# The alert channel itself is under attack.
+rule integrity alert=FORGED,TAMPER,OVERRUN level=warning throttle=0 do=webhook,mail
+
+# An operator stepped the response posture down (or up): leave a trace outside this machine.
+rule posture   alert=POSTURE_CHANGED level=warning do=webhook
+
+# A cache-timing pattern that is loud enough to be critical; hourly at most.
+rule cache     alert=PMU_L1D_ANOMALY,PMU_L2_ANOMALY level=critical throttle=3600 do=webhook

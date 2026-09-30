@@ -30,7 +30,7 @@ check: monitor
 
 # Tests boot a real kernel in QEMU and load a KG_TESTHOOKS build of the module
 # there.  KG_KERNEL must point to a *readable* bzImage matching KVER.
-TESTS ?= basic integrity pmu smt input hw hwlegacy monitor deploy lifecycle posture stress
+TESTS ?= basic integrity pmu smt input hw hwlegacy monitor deploy lifecycle posture escalate stress
 test:
 	tests/vm/run-vm.sh $(TESTS)
 

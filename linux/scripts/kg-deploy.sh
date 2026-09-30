@@ -220,7 +220,8 @@ do_persist() {
     say "installing into ${R:-/} for kernel $KVER"
 
     mkdir -p "$R/lib/modules/$KVER/extra" "$R/etc/modules-load.d" "$R/etc/modprobe.d" \
-             "$R/usr/local/sbin" "$R/etc/systemd/system" "$R/etc/udev/rules.d"
+             "$R/usr/local/sbin" "$R/etc/systemd/system" "$R/etc/udev/rules.d" \
+             "$R/etc/kernelguard" "$R/usr/local/lib/kernelguard/actions"
     install -m 0644 "$MOD" "$R/lib/modules/$KVER/extra/kernelguard.ko"
     echo kernelguard > "$R/etc/modules-load.d/kernelguard.conf"
     {
@@ -230,6 +231,9 @@ do_persist() {
     [ ! -x "$KGMON" ] || install -m 0755 "$KGMON" "$R/usr/local/sbin/kgmon"
     install -m 0644 "$HERE/kernelguard-monitor.service" "$R/etc/systemd/system/kernelguard-monitor.service"
     install -m 0644 "$HERE/70-kernelguard.rules" "$R/etc/udev/rules.d/70-kernelguard.rules"
+    # Escalation policy: the example is installed inactive; copy it to policy.conf to use it.
+    install -m 0644 "$HERE/policy.conf.example" "$R/etc/kernelguard/policy.conf.example"
+    install -m 0755 "$HERE"/actions/kg-action-*.sh "$R/usr/local/lib/kernelguard/actions/"
 
     if [ -z "$DESTDIR" ]; then
         depmod -a "$KVER"
@@ -248,7 +252,10 @@ do_unpersist() {
     [ -n "$DESTDIR" ] || { systemctl disable --now kernelguard-monitor.service 2>/dev/null || true; }
     rm -f "$R/etc/modules-load.d/kernelguard.conf" "$R/etc/modprobe.d/kernelguard.conf" \
           "$R/etc/systemd/system/kernelguard-monitor.service" "$R/etc/udev/rules.d/70-kernelguard.rules" \
-          "$R/lib/modules/$KVER/extra/kernelguard.ko" "$R/usr/local/sbin/kgmon"
+          "$R/lib/modules/$KVER/extra/kernelguard.ko" "$R/usr/local/sbin/kgmon" \
+          "$R/etc/kernelguard/policy.conf.example"
+    rm -rf "$R/usr/local/lib/kernelguard"
+    # /etc/kernelguard/policy.conf and the webhook/mail settings are the operator's: left in place.
     [ -n "$DESTDIR" ] || { depmod -a "$KVER"; systemctl daemon-reload 2>/dev/null || true; }
     ok "persistent installation removed"
 }

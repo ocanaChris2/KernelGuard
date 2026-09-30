@@ -70,6 +70,11 @@ struct kg_comms {
 
 static struct kg_comms *kc;
 
+#ifdef KG_TESTHOOKS
+/* Lets the VM suite check that kgmon treats a notification that fails authentication as forged. */
+bool kg_test_bad_hmac;
+#endif
+
 /*----------------------------------------------------------------------------
  * Rate limiter (lock held).  Critical alerts always bypass it.
  *--------------------------------------------------------------------------*/
@@ -191,6 +196,11 @@ int kg_comms_notify(u32 type, u32 level, u64 p1, u64 p2)
 		pr_err("HMAC computation failed: %d\n", ret);
 		return ret;
 	}
+
+#ifdef KG_TESTHOOKS
+	if (kg_test_bad_hmac)
+		n.hmac[0] ^= 0xff;
+#endif
 
 	/* Spectre-v1 style clamp mirrors SafeArrayIndex() use in the Windows ring code. */
 	slot = array_index_nospec(seq % KG_NOTIFY_SLOTS, KG_NOTIFY_SLOTS);

@@ -77,11 +77,12 @@ jobs:
         run: sudo chmod a+r "/boot/vmlinuz-$(uname -r)"
 
       # These tests need no PMU or SMT topology: they were also run under TCG emulation (no vPMU) and pass.
+      # With KVM, `posture` also checks that HIGH survives the PMU sampler.
       - name: Module tests (gating)
         run: |
           export TMPDIR="$GITHUB_WORKSPACE/.kgvm-tmp" KG_KEEP=1 KG_KERNEL="/boot/vmlinuz-$(uname -r)"
           mkdir -p "$TMPDIR"
-          make -C linux test TESTS="basic integrity monitor deploy input"
+          make -C linux test TESTS="basic integrity monitor deploy input posture escalate"
 
       # PMU, SMT topology, PCIe hot-plug, lifecycle (PMU parameter checks) and stress depend on what the (nested) hypervisor exposes.
       # Advisory until the first runs show they are stable on hosted runners.

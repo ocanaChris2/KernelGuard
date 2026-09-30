@@ -7,6 +7,10 @@
 #
 # Alerts go to the journal (identifier "kernelguard", facility authpriv) and to a
 # CSV file.  Add "--notify=YOURUSER" to ExecStart for desktop pop-ups.
+#
+# If /etc/kernelguard/policy.conf exists kgmon also runs its escalation policy.  Its actions
+# inherit this sandbox: to let them reach the network (webhook) or write to terminals (wall),
+# relax it with a drop-in, see "Escalation policy" in linux/README.md.
 [Unit]
 Description=KernelGuard alert monitor
 Documentation=file:///usr/share/doc/kernelguard/README.md
@@ -14,7 +18,11 @@ ConditionPathExists=/dev/kernelguard
 After=systemd-modules-load.service
 
 [Service]
-Type=simple
+# kgmon speaks the sd_notify protocol itself: READY=1 once it watches the ring, WATCHDOG=1 while
+# it does.  A hung monitor is restarted instead of silently letting alerts pile up.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 ExecStart=/usr/local/sbin/kgmon --syslog --quiet --log /var/log/kernelguard-alerts.csv
 Restart=on-failure
 RestartSec=5
