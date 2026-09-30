@@ -78,3 +78,19 @@ jobs:
 
       - name: Type-check windows/src and windows/usermode
         run: python3 tools/wdk_syntax_check.py
+
+      # windows/src/pe_authenticode.c has no kernel dependencies, so the driver's identity for a vulnerable driver
+      # (its Authenticode digest) is built here and compared with the digest recorded inside real Microsoft
+      # signatures, with an independent implementation, and with hostile input, under AddressSanitizer and UBSan.
+      - name: Authenticode digest code against real signed binaries
+        run: python3 tools/test_pe_authenticode.py --sanitize
+
+      # windows/src/digest_table.c decides whether a driver's digest is on a deny list; it is tested against the
+      # real generated table, so a table the parser cannot read (or a lookup that misses) fails here.
+      - name: Driver digest table parsing and lookup
+        run: python3 tools/test_digest_table.py --sanitize
+
+      # Advisory: it needs the LOLDrivers site, and a newer dataset is a reason to regenerate, not a failure.
+      - name: Is the built-in vulnerable-driver table current?
+        continue-on-error: true
+        run: python3 tools/import_loldrivers.py --check
