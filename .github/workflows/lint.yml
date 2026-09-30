@@ -71,7 +71,7 @@ jobs:
       - name: Install the header fetcher
         run: pip install -r .github/requirements-ci.txt
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .wdk-cache
           key: wdk-10.0.26100.6584-sdk-10.0.26100.9169-${{ hashFiles('tools/wdk_syntax_check.py') }}
