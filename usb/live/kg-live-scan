@@ -1,0 +1,123 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# kg-live-scan - what the live USB does after boot.
+#
+#   1. loads kernelguard.ko in the live kernel and records the hardware/firmware posture
+#      it sees (SMT, IOMMU, PMU, ...);
+#   2. audits the drives of the machine it was booted on, read-only:
+#        Linux   every kernel module under /lib/modules, by mod_deny entry + SHA-256
+#        Windows every driver in Windows/System32/drivers, by SHA-256
+#      and matches them against the deny lists in KGDATA/blocklist/ (if any);
+#   3. writes reports/<timestamp>/report.txt to the KGDATA partition.
+#
+# Exit status: 0 = scan completed (findings do not change it), 1 = the scan itself broke.
+# A finding is a line starting with "FINDING" in the report.
+
+OUT_ROOT=${KGDATA_MNT:-/mnt/kgdata}
+[ -n "$KGDATA_DEV" ] || OUT_ROOT=/tmp
+STAMP=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo unknown-time)
+OUT=$OUT_ROOT/reports/$STAMP
+mkdir -p "$OUT" || { echo "cannot create $OUT"; exit 1; }
+REPORT=$OUT/report.txt
+FINDF=$OUT/findings.txt
+: >"$FINDF"
+
+say()     { echo "$*" | tee -a "$REPORT"; }
+# Findings go through a file: the scans below run in pipelines (subshells), so a counter would be lost.
+finding() { echo "FINDING $*" | tee -a "$REPORT" >>"$FINDF"; }
+
+# deny_hit FILE KEY: is KEY (a hash, or a module entry) listed in the deny list FILE?
+# Lines are "KEY [comment]"; '#' starts a comment.  A list entry without @ matches every srcversion.
+deny_hit() {
+    [ -f "$1" ] || return 1
+    sed 's/#.*//' "$1" | awk -v k="$2" 'BEGIN{ split(k, a, "@") }
+        $1 != "" && ($1 == k || $1 == a[1]) { f = 1 } END { exit !f }'
+}
+
+# scan_linux DEV ROOT: every module under ROOT/lib/modules -> "sha256 entry path".
+scan_linux() {
+    list=$OUT/linux-modules-$(basename "$1").txt
+    : >"$list"
+    find "$2"/lib/modules -type f \( -name '*.ko' -o -name '*.ko.zst' -o -name '*.ko.xz' \) 2>/dev/null |
+    while read -r f; do
+        case $f in
+            *.zst) e=$(zstd -dc "$f" 2>/dev/null | kgmon modid --entry - 2>/dev/null) ;;
+            *.xz)  e=$(xz -dc "$f" 2>/dev/null | kgmon modid --entry - 2>/dev/null) ;;
+            *)     e=$(kgmon modid --entry "$f" 2>/dev/null) ;;
+        esac
+        h=$(sha256sum "$f" | cut -d' ' -f1)
+        echo "$h ${e:-?} ${f#"$2"}" >>"$list"
+        if deny_hit "$BL/sha256.deny" "$h" || { [ -n "$e" ] && deny_hit "$BL/modules.deny" "$e"; }; then
+            finding "denied Linux module on $1: ${f#"$2"} ($e sha256=$h)"
+        fi
+    done
+    say "$(wc -l <"$list") module(s) listed in $(basename "$list")"
+}
+
+# scan_windows DEV DRIVERS_DIR: every .sys -> "sha256 name".
+scan_windows() {
+    list=$OUT/windows-drivers-$(basename "$1").txt
+    : >"$list"
+    find "$2" -maxdepth 1 -type f -iname '*.sys' 2>/dev/null |
+    while read -r f; do
+        h=$(sha256sum "$f" | cut -d' ' -f1)
+        echo "$h $(basename "$f")" >>"$list"
+        deny_hit "$BL/sha256.deny" "$h" &&
+            finding "denied Windows driver on $1: $(basename "$f") (sha256=$h)"
+    done
+    say "$(wc -l <"$list") driver(s) listed in $(basename "$list")"
+}
+
+say "KernelGuard live scan  $STAMP"
+say "live kernel: $(uname -r)   machine: $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) $(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+say "firmware   : $([ -d /sys/firmware/efi ] && echo UEFI || echo BIOS)   secure boot: $(od -An -t u1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | awk '{print ($NF==1)?"on":"off"}')"
+
+# ---- 1. the module in the live kernel ---------------------------------------------------------
+say ""
+say "== kernelguard in the live kernel"
+if insmod /modules/kernelguard.ko 2>"$OUT/insmod.err"; then
+    say "module loaded"
+    { kgmon status; echo; kgmon posture; } >"$OUT/kgmon-status.txt" 2>&1
+    cat "$OUT/kgmon-status.txt" >>"$REPORT"
+    grep -q 'state integrity : ok' "$OUT/kgmon-status.txt" || finding "module state integrity check did not report ok"
+    kgmon --once >"$OUT/alerts.txt" 2>&1
+    if grep -q 'CRITICAL' "$OUT/alerts.txt"; then finding "critical alert(s) raised at boot, see alerts.txt"; fi
+    say "alerts at boot: $(grep -c . "$OUT/alerts.txt") line(s) (alerts.txt)"
+else
+    say "module NOT loaded: $(cat "$OUT/insmod.err")"
+    say "  (a Secure Boot machine only loads a module signed with an enrolled key; see usb/README.md)"
+    grep -H . /sys/kernel/security/lockdown 2>/dev/null | tee -a "$REPORT"
+fi
+
+# ---- 2. host drives ----------------------------------------------------------------------------
+say ""
+say "== host drives (read-only)"
+BL=$OUT_ROOT/blocklist
+mkdir -p /mnt/host
+n=0
+for dev in /dev/sd?[0-9]* /dev/nvme?n?p* /dev/vd?[0-9]*; do
+    [ -b "$dev" ] || continue
+    [ "$dev" = "$KGDATA_DEV" ] && continue
+    mount -o ro "$dev" /mnt/host 2>/dev/null || mount -t ntfs3 -o ro "$dev" /mnt/host 2>/dev/null || continue
+    if [ -d /mnt/host/lib/modules ]; then
+        n=$((n + 1))
+        say "-- $dev: Linux root"
+        scan_linux "$dev" /mnt/host
+    fi
+    # Windows: the directory name's case depends on the driver used; try both.
+    for d in /mnt/host/Windows/System32/drivers /mnt/host/windows/system32/drivers; do
+        [ -d "$d" ] || continue
+        n=$((n + 1))
+        say "-- $dev: Windows system drive"
+        scan_windows "$dev" "$d"
+        break       # case-insensitive filesystems answer to both spellings
+    done
+    umount /mnt/host
+done
+[ "$n" -gt 0 ] || say "no Linux or Windows system drive found"
+
+say ""
+FINDINGS=$(wc -l <"$FINDF")
+say "== summary: $FINDINGS finding(s)   report: reports/$STAMP/report.txt"
+exit 0

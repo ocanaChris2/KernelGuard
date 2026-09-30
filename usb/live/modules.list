@@ -1,0 +1,28 @@
+# Modules the live image loads at boot (storage, filesystems, input).  Each one and its dependencies
+# are copied into the initramfs by usb/build-image.sh; missing ones (built into the kernel, or not
+# present in this distro's kernel) are skipped.  One per line, in load order.
+# USB host controllers and storage
+xhci_pci
+ehci_pci
+uhci_hcd
+usb_storage
+uas
+# SATA / NVMe / virtio disks
+ahci
+nvme
+virtio_pci
+virtio_blk
+sd_mod
+# Filesystems: the report volume (FAT32) and the host drives that get audited
+nls_cp437
+nls_iso8859_1
+nls_utf8
+vfat
+exfat
+ext4
+xfs
+btrfs
+ntfs3
+# Keyboard for the optional shell
+usbhid
+hid_generic

@@ -38,3 +38,6 @@ deploy_log.txt
 
 # Windows header cache used by tools/wdk_syntax_check.py
 /.wdk-cache/
+
+# live USB image builder output
+usb/out/

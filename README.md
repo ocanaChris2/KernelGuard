@@ -40,6 +40,7 @@ Project documents: [Roadmap](ROADMAP.md) (what "ready" means and the gates to ge
 - [Build](#build)
 - [Deploy](#deploy)
 - [Uninstall](#uninstall)
+- [Live USB scanner](#live-usb-scanner)
 - [Alert protocol](#alert-protocol)
 - [IOCTL reference](#ioctl-reference)
 - [MSR reference](#msr-reference)
@@ -631,6 +632,8 @@ KernelGuard/
 │
 ├── linux/                                    Linux port: module, monitor, scripts, VM tests
 │
+├── usb/                                      Bootable live-USB scanner: build-image.sh, flash.sh, QEMU boot test
+│
 ├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
 ├── kgbuild/                                  Code behind build.py: linux.py and windows.py, plus the shared flow
 ├── tools/                                    version.py, changelog_notes.py, wdk_syntax_check.py, import_loldrivers.py,
@@ -816,6 +819,46 @@ sc.exe start  KernelGuard
 ```
 
 This stops the monitor process, stops and deletes the service, and removes the `.sys` from `system32\drivers`.
+
+---
+
+## Live USB scanner
+
+`usb/` builds a bootable USB stick that scans the machine it is plugged into and writes the report back onto the stick. It boots a small live Linux, loads `kernelguard.ko` there, and audits the host's own drives read-only: every Linux kernel module and every Windows `.sys` driver is listed with its SHA-256 and matched against deny lists you keep on the stick (`blocklist/`, empty by default). A match is a `FINDING` line in `reports/<timestamp>/report.txt`. Nothing is written to the host's drives.
+
+### Build the image
+
+Needs Linux with `busybox cpio sgdisk mtools dosfstools grub-efi-amd64-bin` (add `grub-pc-bin` for legacy BIOS boot) and the kernel headers of the kernel you boot. No root is required.
+
+```sh
+usb/build-image.sh                  # -> usb/out/kernelguard-live.img and .sha256
+```
+
+`KG_KVER` picks the kernel (default: the running one). If `/boot/vmlinuz-*` is root-only, point `KG_KERNEL` at a readable copy. The other variables (`KG_SIGN_KEY`, `KG_WINDOWS_DIR`, `KG_USB_DATA_MB`) are described at the top of the script.
+
+### Flash it
+
+```sh
+lsblk                                        # find the stick, e.g. /dev/sdb (the whole disk, not sdb1)
+sudo usb/flash.sh --dry-run /dev/sdX         # runs every safety check, writes nothing
+sudo usb/flash.sh /dev/sdX                   # asks you to type the device name, writes, then verifies
+```
+
+`flash.sh` refuses to write unless the target is a whole disk that is removable or on the USB bus, has nothing mounted, and is not the disk the running system lives on. It shows the model and size, asks you to type the device name, writes with `dd conv=fsync`, then reads the stick back and compares its SHA-256 with the image. **The stick's previous contents are destroyed.**
+
+### Use it
+
+1. Plug the stick into the machine to check and boot it from the firmware's boot menu. Choose the default entry ("report, then power off") or the shell entry.
+2. When the machine powers off, plug the stick into another computer. The `KGDATA` partition (FAT32) holds `reports/`, and is where `blocklist/sha256.deny` and `blocklist/modules.deny` are edited.
+3. To install KernelGuard on a Windows host, copy the built driver onto the stick with `usb\windows\Build-UsbPayload.ps1 -Drive E`, then run `Deploy-KernelGuard.ps1 -SkipBuild` from `E:\windows\` on that machine.
+
+### Limits
+
+- **Secure Boot.** The stick's GRUB and the module are unsigned. Turn Secure Boot off, or build with `KG_SIGN_KEY`/`KG_SIGN_CERT` and enroll the certificate with `mokutil --import`. Without that the report says `module NOT loaded`; the drive audit still runs.
+- **One kernel** per image. The module only loads into the kernel it was built for.
+- **Tested in QEMU only** (BIOS and UEFI boots with simulated host drives: `usb/tests/test-image.sh`). Not yet run from a physical stick, and `Build-UsbPayload.ps1` has not been run on Windows. There is no WinPE scanner: Windows drives are audited from the live Linux.
+
+See `usb/README.md` for the layout of the stick.
 
 ---
 

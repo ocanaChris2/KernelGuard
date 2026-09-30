@@ -16,6 +16,7 @@ SPDX-License-Identifier = "GPL-2.0-only"
 [[annotations]]
 path = [
   "windows/**",
+  "usb/**",
   "build.py",
   "build.sh",
   "build.cmd",
