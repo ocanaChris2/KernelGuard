@@ -50,14 +50,14 @@ $DriverName   = 'KernelGuard'
 $MonitorName  = 'KernelGuardMonitor'
 $SysFile      = "$DriverName.sys"
 $MonitorExe   = "$MonitorName.exe"
-$RepoRoot     = $PSScriptRoot
-$OutDir       = Join-Path $RepoRoot "x64\$Configuration"
+$SolutionRoot = Split-Path -Parent $PSScriptRoot   # windows\ : the folder holding KernelGuard.sln
+$OutDir       = Join-Path $SolutionRoot "x64\$Configuration"
 $SysSource    = Join-Path $OutDir $SysFile
 $MonitorBin   = Join-Path $OutDir $MonitorExe
-$SolutionDir  = "$RepoRoot\"
+$SolutionDir  = "$SolutionRoot\"
 $MSBuild      = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe'
-$DriverVcxproj  = Join-Path $RepoRoot "src\$DriverName.vcxproj"
-$MonitorVcxproj = Join-Path $RepoRoot "usermode\$MonitorName.vcxproj"
+$DriverVcxproj  = Join-Path $SolutionRoot "src\$DriverName.vcxproj"
+$MonitorVcxproj = Join-Path $SolutionRoot "usermode\$MonitorName.vcxproj"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function Write-Header([string]$msg) {

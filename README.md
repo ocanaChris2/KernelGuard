@@ -5,7 +5,7 @@
 ![Ring 0 kernel mode](https://img.shields.io/badge/mode-Ring%200-critical)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
 
-A Windows 11 x64 Ring-0 kernel-mode driver (WDM) that detects and actively mitigates side-channel attacks, compromised kernels, and hardware keyloggers. An equivalent Linux x86-64 kernel module and monitor live in [`linux/`](linux/README.md): same five modules, same alert protocol, adapted to the mechanisms Linux supports (start with its *What differs from the Windows driver* section).
+A Windows 11 x64 Ring-0 kernel-mode driver (WDM, in [`windows/`](windows/)) that detects and actively mitigates side-channel attacks, compromised kernels, and hardware keyloggers. An equivalent Linux x86-64 kernel module and monitor live in [`linux/`](linux/README.md): same five modules, same alert protocol, adapted to the mechanisms Linux supports (start with its *What differs from the Windows driver* section).
 
 The driver operates under a **zero-trust kernel assumption**: it cannot rely on kernel APIs for critical integrity operations because the kernel itself may be partially compromised. All integrity comparisons are constant-time; all security-boundary flushes execute directly via MSR writes and a MASM routine (`PerformVerwFlush`), bypassing any hooked wrappers.
 
@@ -55,7 +55,7 @@ Module 2 detects unauthorized keyboard filter drivers by comparing hardware-repo
 
 **Recovery (mouse must still work):**
 
-1. Right-click `stop_driver.bat` (provided at the repo root) → **Run as administrator**. This runs `sc stop KernelGuard && sc delete KernelGuard` without requiring any keyboard input.
+1. Right-click `stop_driver.bat` (provided in `windows/scripts/`) → **Run as administrator**. This runs `sc stop KernelGuard && sc delete KernelGuard` without requiring any keyboard input.
 2. Alternatively: right-click the Start button → *Terminal (Admin)* → `sc stop KernelGuard` typed via the on-screen keyboard (Settings → Accessibility → Keyboard → On-Screen Keyboard).
 3. In VirtualBox/VMware: revert to a snapshot taken before loading the driver.
 
@@ -146,7 +146,7 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 
 ### Module 1 — Side-Channel Attack Detection (PMU)
 
-`src/pmu_detection.c`
+`windows/src/pmu_detection.c`
 
 - Configures `IA32_PERFEVTSEL0/1` for L1D and L2 cache-miss counting via IPI to every logical CPU.
 - Pre-loads PMC counters near overflow so a PMI fires after `L1D_MISS_THRESHOLD` / `L2_MISS_THRESHOLD` events.
@@ -157,7 +157,7 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 
 ### Module 2 — Hardware Keylogger & Peripheral Detection + Mitigation
 
-`src/hw_keylogger_detect.c`
+`windows/src/hw_keylogger_detect.c`
 
 **Detection:**
 
@@ -189,7 +189,7 @@ On driver unload, `HwKeyloggerUninitialize` stops the monitoring thread and rest
 
 ### Module 3 — Kernel Integrity & Hook Detection
 
-`src/kernel_integrity.c`
+`windows/src/kernel_integrity.c`
 
 Three independent sub-systems, all running at `PASSIVE_LEVEL` on a background worker thread (30-second interval):
 
@@ -201,7 +201,7 @@ Three independent sub-systems, all running at `PASSIVE_LEVEL` on a background wo
 
 ### Module 4 — Crypto-Agnostic Memory & Cache Mitigation (Core Engine)
 
-`src/cache_mitigation.c`
+`windows/src/cache_mitigation.c`
 
 The central mitigation engine. Protects any sensitive data based on memory tagging — it does not attempt to identify cryptographic code.
 
@@ -221,7 +221,7 @@ The central mitigation engine. Protects any sensitive data based on memory taggi
 
 ### Module 5 — Secure Ring 0 → Ring 3 Communication
 
-`src/secure_comms.c`
+`windows/src/secure_comms.c`
 
 Two independent channels, designed to survive a partially hooked device stack:
 
@@ -464,7 +464,7 @@ Libraries, schools, town halls, clinics, internet cafés, hotel business centres
 #### What the current code means for a deployment
 
 - **Windows is test-signed and needs HVCI off.** Test-signing mode normally cannot be enabled while Secure Boot is on, so a Windows pilot runs without two protections that public machines would otherwise want. Production signing is listed under [Known limitations](#known-limitations).
-- **The keyboard whitelist is fixed and there is no detect-only mode.** Any driver in a keyboard stack that is not on the compiled-in list (`g_WhitelistedDrivers` in `src/shared_state.c`) is neutralized on sight and again every 5 seconds. Validate each hardware model first.
+- **The keyboard whitelist is fixed and there is no detect-only mode.** Any driver in a keyboard stack that is not on the compiled-in list (`g_WhitelistedDrivers` in `windows/src/shared_state.c`) is neutralized on sight and again every 5 seconds. Validate each hardware model first.
 - **The PCIe/DMA half of Module 2 is inactive on Windows.** `PciGetEcamBaseFromAcpi` is a stub and `g_VtdMmioBase` is never populated. The DMA allow-list is empty and nothing fills it, so wiring up those two alone would make every device "unauthorized". Rely on firmware and OS DMA protection.
 - **The Windows monitor is local-only.** It shows alerts on the screen in front of the visitor, lets anyone at the console close it or clear its log, and keeps nothing once closed unless someone chooses *Save Log*. There is no Event Log, syslog or network reporting.
 - **Linux trusts what is present at load.** Bus masters and input handlers attached when the module loads form the baseline (trust on first use). Load it at boot from a clean, inspected state; a rogue device already attached at that point is invisible to the audit.
@@ -528,46 +528,49 @@ A reboot clears fail-safe mode, but it is not remediation after any of these.
 ```text
 KernelGuard/
 │
-├── src/
-│   ├── KernelGuard.h                         Master header: types, MSR constants, prototypes
-│   ├── driver_main.c                         DriverEntry / DriverUnload / device dispatch
-│   ├── shared_state.c                        Global state, LogAlert, DispatchCrossModuleEvent
-│   ├── pmu_detection.c                       Module 1: PMU config, PmiIsr, RDTSC profiling
-│   ├── hw_keylogger_detect.c                 Module 2: PCIe ECAM walk, IOMMU/VT-d check
-│   ├── kernel_integrity.c                    Module 3: IDT check, dispatch hooks, .text hash
-│   ├── cache_mitigation.c                    Module 4: VERW/L1D flush, CAT, SMT, sens-page API
-│   ├── secure_comms.c                        Module 5: HMAC shared memory, MSR covert channel
-│   ├── asm/
-│   │   └── verw_flush.asm                    MASM: PerformVerwFlush() — MFENCE + VERW 0x2B
-│   └── KernelGuard.vcxproj                   MSBuild driver project (WDM, DynamicLibrary+.sys)
-│
-├── usermode/
-│   ├── kg_shared.h                           IOCTL codes + shared structures (kernel + user)
-│   ├── main.c                                WinMain, tray icon, message pump
-│   ├── driver_comm.c / .h                    Device open, IOCTL, HMAC verify, polling thread
-│   ├── log_window.c / .h                     Modeless alert log dialog (ListView, Save Log)
-│   ├── resource.h                            Resource IDs
-│   ├── app.rc                                Menu, dialog, string table
-│   └── KernelGuardMonitor.vcxproj            MSBuild monitor project (Win32 GUI)
+├── windows/                                  Windows 11 x64: WDM driver + tray monitor
+│   ├── src/                                  Kernel driver
+│   │   ├── KernelGuard.h                     Master header: types, MSR constants, prototypes
+│   │   ├── driver_main.c                     DriverEntry / DriverUnload / device dispatch
+│   │   ├── shared_state.c                    Global state, LogAlert, DispatchCrossModuleEvent
+│   │   ├── pmu_detection.c                   Module 1: PMU config, PmiIsr, RDTSC profiling
+│   │   ├── hw_keylogger_detect.c             Module 2: PCIe ECAM walk, IOMMU/VT-d check
+│   │   ├── kernel_integrity.c                Module 3: IDT check, dispatch hooks, .text hash
+│   │   ├── cache_mitigation.c                Module 4: VERW/L1D flush, CAT, SMT, sens-page API
+│   │   ├── secure_comms.c                    Module 5: HMAC shared memory, MSR covert channel
+│   │   ├── asm/
+│   │   │   └── verw_flush.asm                MASM: PerformVerwFlush() — MFENCE + VERW 0x2B
+│   │   └── KernelGuard.vcxproj               MSBuild driver project (WDM, DynamicLibrary+.sys)
+│   ├── usermode/                             Monitor
+│   │   ├── kg_shared.h                       IOCTL codes + shared structures (kernel + user)
+│   │   ├── main.c                            WinMain, tray icon, message pump
+│   │   ├── driver_comm.c / .h                Device open, IOCTL, HMAC verify, polling thread
+│   │   ├── log_window.c / .h                 Modeless alert log dialog (ListView, Save Log)
+│   │   ├── resource.h                        Resource IDs
+│   │   ├── app.rc                            Menu, dialog, string table
+│   │   └── KernelGuardMonitor.vcxproj        MSBuild monitor project (Win32 GUI)
+│   ├── scripts/
+│   │   └── Deploy-KernelGuard.ps1            PowerShell deploy script (build, sign, register, start)
+│   ├── docs/
+│   │   └── KernelGuard_Driver_Architecture_v1.1.pdf   Authoritative architecture spec
+│   ├── KernelGuard.sln                       Visual Studio solution (driver + monitor)
+│   └── KernelGuard.inf                       Driver INF (install / uninstall / service registration)
 │
 ├── linux/                                    Linux port: module, monitor, scripts, VM tests
 │
-├── KernelGuard.sln                           Visual Studio solution (driver + monitor)
-├── KernelGuard.inf                           Driver INF (install / uninstall / service registration)
-├── Deploy-KernelGuard.ps1                    PowerShell deploy script (build, sign, register, start)
 ├── build.py, build.sh, build.cmd             Interactive build for Windows and Linux (see Build)
-├── LITERATURE_PRINCIPLES.md                  How to read and map the technical literature
-└── KernelGuard_Driver_Architecture_v1.1.pdf  Authoritative architecture spec
+├── kgbuild/                                  Code behind build.py: linux.py and windows.py, plus the shared flow
+└── LITERATURE_PRINCIPLES.md                  How to read and map the technical literature
 ```
 
 ### Build outputs
 
 ```text
-x64\Debug\KernelGuard.sys           Kernel driver (debug)
-x64\Debug\KernelGuard.pdb
-x64\Debug\KernelGuardMonitor.exe    User-mode monitor (debug)
-x64\Release\KernelGuard.sys         Kernel driver (release)
-x64\Release\KernelGuardMonitor.exe  User-mode monitor (release)
+windows\x64\Debug\KernelGuard.sys           Kernel driver (debug)
+windows\x64\Debug\KernelGuard.pdb
+windows\x64\Debug\KernelGuardMonitor.exe    User-mode monitor (debug)
+windows\x64\Release\KernelGuard.sys         Kernel driver (release)
+windows\x64\Release\KernelGuardMonitor.exe  User-mode monitor (release)
 ```
 
 ---
@@ -587,11 +590,14 @@ the toolchain for that choice is installed, then builds. It never signs, install
 python build.py --help                      # every option
 ```
 
-It needs Python 3.8+ (standard library only); `Deploy-KernelGuard.ps1 -Action build` and `make -C linux` still
+It needs Python 3.8+ (standard library only); `windows\scripts\Deploy-KernelGuard.ps1 -Action build` and `make -C linux` still
 work without it. On Windows it finds MSBuild through `vswhere` and checks what the `.vcxproj` files ask for
 (MSVC toolsets, MASM, WDK and SDK versions, Spectre-mitigated libraries); on Linux it checks `make`, the compiler
 the kernel tree names, and the kernel headers. Exit status: `0` ok, `1` build failed, `2` bad usage,
 `3` prerequisites missing.
+
+The code follows the repository split: `kgbuild/linux.py` and `kgbuild/windows.py` hold everything specific to one
+platform (and never import each other); the questions, the checks flow and the output are shared.
 
 ### Quick build (recommended)
 
@@ -599,8 +605,8 @@ Use the deploy script's `build` action — it sets up paths automatically:
 
 ```powershell
 # From an elevated prompt (not required just to build, but consistent)
-.\Deploy-KernelGuard.ps1 -Action build
-.\Deploy-KernelGuard.ps1 -Action build -Configuration Release
+.\windows\scripts\Deploy-KernelGuard.ps1 -Action build
+.\windows\scripts\Deploy-KernelGuard.ps1 -Action build -Configuration Release
 ```
 
 ### Manual MSBuild
@@ -612,14 +618,14 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curren
 $root    = "C:\Users\<you>\...\KernelGuard"
 
 # Driver
-& $msbuild "$root\src\KernelGuard.vcxproj" `
+& $msbuild "$root\windows\src\KernelGuard.vcxproj" `
     /p:Configuration=Debug /p:Platform=x64 `
-    /p:SolutionDir="$root\" /v:minimal /nologo
+    /p:SolutionDir="$root\windows\" /v:minimal /nologo
 
 # Monitor
-& $msbuild "$root\usermode\KernelGuardMonitor.vcxproj" `
+& $msbuild "$root\windows\usermode\KernelGuardMonitor.vcxproj" `
     /p:Configuration=Debug /p:Platform=x64 `
-    /p:SolutionDir="$root\" /v:minimal /nologo
+    /p:SolutionDir="$root\windows\" /v:minimal /nologo
 ```
 
 ### CMake / Ninja (alternative)
@@ -632,7 +638,7 @@ cmake --build --preset x64-debug
 
 ### Compiler flags
 
-The driver project enforces the following key flags (see `src/KernelGuard.vcxproj`):
+The driver project enforces the following key flags (see `windows/src/KernelGuard.vcxproj`):
 
 | Flag | Purpose |
 | --- | --- |
@@ -649,26 +655,26 @@ The driver project enforces the following key flags (see `src/KernelGuard.vcxpro
 
 ## Deploy
 
-`Deploy-KernelGuard.ps1` requires an **elevated** PowerShell session and test-signing mode enabled.
+`windows\scripts\Deploy-KernelGuard.ps1` requires an **elevated** PowerShell session and test-signing mode enabled. The commands below are run from the repository root; the script locates the solution relative to its own location, so the current directory does not matter.
 
 ```powershell
 # Full pipeline: build → sign → register → start → launch monitor
-.\Deploy-KernelGuard.ps1
+.\windows\scripts\Deploy-KernelGuard.ps1
 
 # Release build
-.\Deploy-KernelGuard.ps1 -Configuration Release
+.\windows\scripts\Deploy-KernelGuard.ps1 -Configuration Release
 
 # Skip build (use already-built .sys)
-.\Deploy-KernelGuard.ps1 -SkipBuild
+.\windows\scripts\Deploy-KernelGuard.ps1 -SkipBuild
 
 # Skip build and sign (binary already signed externally)
-.\Deploy-KernelGuard.ps1 -SkipBuild -SkipSign
+.\windows\scripts\Deploy-KernelGuard.ps1 -SkipBuild -SkipSign
 
 # Build only, do not install
-.\Deploy-KernelGuard.ps1 -Action build
+.\windows\scripts\Deploy-KernelGuard.ps1 -Action build
 
 # Check current service and monitor status
-.\Deploy-KernelGuard.ps1 -Action status
+.\windows\scripts\Deploy-KernelGuard.ps1 -Action status
 ```
 
 ### What the install action does
@@ -689,14 +695,14 @@ The driver project enforces the following key flags (see `src/KernelGuard.vcxpro
 
 ```powershell
 # Copy binary
-Copy-Item x64\Debug\KernelGuard.sys $env:SystemRoot\system32\drivers\ -Force
+Copy-Item windows\x64\Debug\KernelGuard.sys $env:SystemRoot\system32\drivers\ -Force
 
 # Register and start
 sc.exe create KernelGuard type= kernel binPath= "$env:SystemRoot\system32\drivers\KernelGuard.sys"
 sc.exe start  KernelGuard
 
 # Launch monitor
-.\x64\Debug\KernelGuardMonitor.exe
+.\windows\x64\Debug\KernelGuardMonitor.exe
 ```
 
 ---
@@ -704,7 +710,7 @@ sc.exe start  KernelGuard
 ## Uninstall
 
 ```powershell
-.\Deploy-KernelGuard.ps1 -Action uninstall
+.\windows\scripts\Deploy-KernelGuard.ps1 -Action uninstall
 ```
 
 This stops the monitor process, stops and deletes the service, and removes the `.sys` from `system32\drivers`.

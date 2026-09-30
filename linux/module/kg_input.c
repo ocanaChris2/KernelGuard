@@ -2,7 +2,7 @@
 /*
  * kg_input.c - Module 2 (keyboard-path half) and the input-path part of
  * Module 3.  Counterpart of PciDetectDiscrepancies / NeutralizeKbdFilterDriver
- * in src/hw_keylogger_detect.c and ScanKeyboardDrivers in kernel_integrity.c.
+ * in windows/src/hw_keylogger_detect.c and ScanKeyboardDrivers in kernel_integrity.c.
  *
  * The Windows keyboard stack is  hardware -> kbdhid/i8042prt -> [filter drivers]
  * -> kbdclass.  Anything between the port driver and the class driver sees every

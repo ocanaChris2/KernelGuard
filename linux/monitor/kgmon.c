@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * kgmon.c - KernelGuard monitor for Linux.
- * Counterpart of usermode/{main,driver_comm,log_window}.c.
+ * Counterpart of windows/usermode/{main,driver_comm,log_window}.c.
  *
  * The Windows monitor is a tray application: a polling thread validates each
  * notification's HMAC and raises a balloon.  This is the terminal / service

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * kg_integrity.c - Module 3: kernel integrity and hook detection.
- * Counterpart of src/kernel_integrity.c.
+ * Counterpart of windows/src/kernel_integrity.c.
  *
  *  3.1  CPU control state   IDT gates, syscall-entry MSRs, CR0.WP, CR4 pins,
  *                           IBRS - checked on EVERY CPU against a boot-time
