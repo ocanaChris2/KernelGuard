@@ -37,6 +37,10 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
 - **Windows monitor: Application event log reporting** **(unverified on Windows)**. Source `KernelGuard`; events
   900-902 for the monitor, `1000 + alert code` for alerts, 1999 for a notification that failed its HMAC; the
   deploy script registers and removes the source.
+- **Linux packaging:** `linux/packaging/build-deb.sh` builds a Debian package (DKMS module source, `kgmon`, systemd
+  unit, udev rule, man page `kgmon(8)`, example policy and actions); `dkms.conf`. Built and DKMS-built here;
+  installing the package was not tested.
+- **Linux:** fuzz harness for the escalation policy parser and engine (`make -C linux/monitor fuzz`), run in CI.
 - `tools/wdk_syntax_check.py`, run by the `lint` workflow: fetches the Windows 11 WDK/SDK headers from NuGet
   (about 160 MB) and type-checks every file in `windows/src` and `windows/usermode` with clang. Compile-only.
 - `ROADMAP.md` (lab, pilot and production stages with checkable gates) and `docs/THREAT_MODEL.md`.
@@ -63,6 +67,8 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
 
 ### Changed
 
+- `linux/monitor/Makefile` no longer loses `-I../include` when `CFLAGS` is given on the command line (every
+  distribution build does), which broke `make CFLAGS=...`.
 - `kgmon` no longer ignores `SIGCHLD`: helper processes (desktop notifications, policy actions) are tracked, reaped
   every poll, capped at 32, and killed with their process group when they overrun their timeout.
 - SPDX identifiers in `linux/` normalized from the deprecated `GPL-2.0` to `GPL-2.0-only`.

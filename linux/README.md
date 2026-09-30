@@ -474,8 +474,27 @@ sudo scripts/kg-deploy.sh unpersist
 DESTDIR=/tmp/stage scripts/kg-deploy.sh persist     # stage the files without root, to inspect them
 ```
 
-Persistence is **per kernel**: after a kernel update rebuild and (if needed) re-sign — DKMS is the usual
-way to automate that and is not provided here. Module parameter values must not contain spaces.
+Persistence with `persist` is **per kernel**: after a kernel update rebuild and (if needed) re-sign, or use the
+Debian package below, which automates that through DKMS. Module parameter values must not contain spaces.
+`persist` also stages an inactive example escalation policy in `/etc/kernelguard/` and the action scripts in
+`/usr/local/lib/kernelguard/actions/`.
+
+**Debian package (DKMS)** — for machines where the module must survive kernel updates:
+
+```sh
+linux/packaging/build-deb.sh                 # → dist/kernelguard_<version>-1_amd64.deb (needs debhelper, dpkg-dev, fakeroot)
+sudo apt install ./dist/kernelguard_*.deb    # builds the module for every installed kernel that has headers
+sudo modprobe kernelguard                    # nothing is loaded automatically
+sudo systemctl enable --now kernelguard-monitor
+```
+
+The package installs the module source under `/usr/src/kernelguard-<version>/` with a `dkms.conf`
+(`AUTOINSTALL=yes`, so DKMS rebuilds it for each new kernel and signs it with the machine's MOK when Secure Boot needs
+that), `kgmon` in `/usr/sbin`, the systemd unit (not enabled), the udev rule, the man page `kgmon(8)`, the action
+scripts in `/usr/lib/kernelguard/actions/` and an example policy in `/usr/share/doc/kernelguard/examples/`.
+**Tested:** the package builds; its DKMS source builds `kernelguard.ko` for 7.0.0-31 through `dkms build`; `kgmon`
+from the package runs its self-test. **Not tested:** installing it (the maintainer scripts run `dkms add` and
+`dkms install` and were checked with `shellcheck` only), signing with a real MOK, and upgrade or removal.
 
 ---
 
@@ -740,6 +759,12 @@ installed header tree (two 6.8, two 6.14, 6.17, two 7.0). `checkpatch.pl` report
 | `escalate` | policy validation (line numbers, writable file or program refused); level filter; base action with the right environment and none of the caller's; throttle; escalation by repetition and by age; `ack`; a repeat after an ack is a new incident; an overrunning action and its child killed at the timeout; no zombies; `--once` runs nothing; a notification with a wrong HMAC only raises `FORGED` and never matches its content; a broken policy stops the monitor; `sd_notify` READY/WATCHDOG/STOPPING |
 | `stress` | 4 concurrent alert writers vs. a live reader: zero HMAC failures, zero torn slots |
 
+**Fuzzing.** `make -C linux/monitor fuzz` builds the escalation policy parser and engine with AddressSanitizer and
+UBSan and runs 200 000 mutated policies from a fixed seed (`FUZZ_ITERS=` for more); `make fuzz-libfuzzer` does the
+coverage-guided version where clang is available. A deliberately introduced off-by-one in the tokenizer is caught by
+the standalone run. The kernel-facing surface (`ioctl`, `mmap`) is small and is **not** fuzzed yet; a syzkaller
+description for it is on the [roadmap](../ROADMAP.md).
+
 Fixtures (`tests/vm/testmods/`): a rogue input handler and a tamper module (patches module/kernel text through
 a temporary writable alias, changes `MSR_CSTAR`, clears `CR0.WP` on one CPU, raises an IDT gate's DPL). They
 exist only in the guest.
@@ -784,7 +809,7 @@ are compile-checked only), and long-running behaviour. Power-off handling of D3c
 | **AMD** | code paths use generic perf events and `X86_BUG_*`; compiled for both, exercised only on Intel-host KVM guests |
 | **Hybrid CPUs** | generic events resolve per CPU; not exercised |
 | **Hypervisor guests** | the Windows README's VM keyboard-loss problem does not arise in detect-only mode; with `enforce=1` a hypervisor's virtual input handler that is not stock would be detached — use `kbd_allow=` |
-| **Persistence** | per-kernel; no DKMS packaging |
+| **Persistence** | `persist` is per kernel; the Debian/DKMS package rebuilds per kernel but its installation has not been tested |
 | **Detached handlers** | `enforce=1` does not re-attach on unload; reload the owning driver or replug the device |
 | **Kernels** | x86-64 only, ≥ 6.4 (`struct module_memory`); compile-checked on 6.8, 6.14, 6.17, 7.0 |
 

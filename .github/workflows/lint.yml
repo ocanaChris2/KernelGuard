@@ -43,7 +43,7 @@ jobs:
         run: npx --yes markdownlint-cli2@0.23.3 "**/*.md"
 
       - name: Shell (warnings and errors)
-        run: shellcheck -x -S warning $(git ls-files '*.sh') linux/tests/vm/guest/init
+        run: shellcheck -x -S warning $(git ls-files '*.sh') linux/tests/vm/guest/init linux/packaging/debian/kernelguard.postinst linux/packaging/debian/kernelguard.prerm
 
       - name: Python (syntax errors and pyflakes)
         run: ruff check --select E9,F build.py kgbuild tools

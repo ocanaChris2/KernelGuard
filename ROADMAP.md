@@ -26,8 +26,8 @@ To enter:
 - [ ] Windows: the shared-state hash stops covering counters that change at run time (the driver otherwise enters
       fail-safe by itself; see *Observation 1* in the Linux README).
 - [ ] A tagged release with checksums, an SPDX SBOM and build provenance.
-- [ ] Linux: packaging that survives a kernel update (DKMS or a distribution package) with the module re-signed
-      for Secure Boot.
+- [ ] Linux: packaging that survives a kernel update with the module re-signed for Secure Boot. *(A Debian/DKMS
+      package exists and builds; installing it and MOK signing have not been tested.)*
 - [ ] Validated on at least three real hardware models per platform, including one AMD, with the keyboard allow-list
       checked on each and assistive technology tested.
 - [ ] Recovery procedures rehearsed: stopping the driver without the local keyboard, and posture reset on Linux.

@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+set -e
+
+NAME=kernelguard
+VERSION=$(dpkg-query -W -f='${Version}' "$NAME" | sed 's/-[^-]*$//;s/^[0-9]*://')
+
+case "$1" in
+remove|upgrade|deconfigure)
+    dkms remove -m "$NAME" -v "$VERSION" --all 2>/dev/null || true
+    ;;
+esac
+
+#DEBHELPER#
+exit 0
