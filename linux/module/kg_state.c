@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * kg_state.c - global state, alert reporting and cross-module event dispatch.
- * Counterpart of src/shared_state.c.
+ * Counterpart of windows/src/shared_state.c.
  *
  * Differences from the Windows driver worth knowing about:
  *

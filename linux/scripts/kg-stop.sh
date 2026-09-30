@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 #
-# kg-stop.sh - emergency stop.  Counterpart of stop_driver.bat.
+# kg-stop.sh - emergency stop.  Counterpart of windows/scripts/stop_driver.bat.
 #
 # Turns active mitigation off first (so nothing more is cleared or detached), then
 # stops the monitor and unloads the module.  Needs no keyboard input beyond

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * kernelguard_uapi.h - ABI shared by the KernelGuard kernel module and the
- * user-space monitor (kgmon).  Linux counterpart of usermode/kg_shared.h.
+ * user-space monitor (kgmon).  Linux counterpart of windows/usermode/kg_shared.h.
  *
  * The notification wire format is byte-identical to the Windows driver's
  * SECURE_NOTIFICATION / SHARED_MEM_REGION so that one protocol description

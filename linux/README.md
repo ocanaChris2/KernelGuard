@@ -96,8 +96,8 @@ from two perf counters per CPU, and taints the kernel (out-of-tree + unsigned un
 | **M5 key** | `RDTSC ⊕ system time` | `get_random_bytes()` | — |
 | **M5 fallback** | Write an alert code to MSR `0x150` | **uevent** (`KOBJ_CHANGE`) + kernel log | `0x150` is `#GP` on most CPUs, has no reader, and an implemented-but-unrelated MSR would be corrupted. uevents reach udev/systemd with no polling |
 | **Monitor** | Tray icon, balloon, log window | `kgmon`: stdout, CSV log (same columns), syslog, `notify-send`, `status`, `run` | — |
-| **Install** | `Deploy-KernelGuard.ps1`, test-signing | `scripts/kg-deploy.sh`, Secure Boot MOK signing | — |
-| **Emergency stop** | `stop_driver.bat` | `scripts/kg-stop.sh` | — |
+| **Install** | `windows/scripts/Deploy-KernelGuard.ps1`, test-signing | `scripts/kg-deploy.sh`, Secure Boot MOK signing | — |
+| **Emergency stop** | `windows/scripts/stop_driver.bat` | `scripts/kg-stop.sh` | — |
 | **Boot start** | INF `SERVICE_SYSTEM_START` | `persist` → `modules-load.d` | — |
 
 ### Observations about the Windows implementation
@@ -117,7 +117,7 @@ Found while porting; nothing on the Windows side was changed. All are checkable 
 5. `IA32_ARCH_CAPABILITIES`: `ARCH_CAP_L1TF_NO` and `ARCH_CAP_SSB_NO` are both `1<<4`; `CPU_FEAT_IBRS_ALL` is
    set from CPUID.7 EDX[26] (IBRS/IBPB) rather than the MSR; `CPU_FEAT_IBPB` is never set.
 6. `PciEcamRead/Write` use `Bus << 20` without subtracting the MCFG start bus number.
-7. `stop_driver.bat` stops and deletes a service named `ScpdDriver`, while the README and deploy script name
+7. `windows/scripts/stop_driver.bat` stops and deletes a service named `ScpdDriver`, while the README and deploy script name
    it `KernelGuard`, so the documented recovery script does not match the installed service.
 8. The MSR "covert channel" writes MSR `0x150` (described as both `IA32_SMRR_PHYSBASE` and an alias of
    `IA32_MCG_CAP`, which is `0x179`); there is no reader for it.
@@ -308,6 +308,8 @@ All present in the stock Ubuntu/Mint kernels.
 ---
 
 ## Repository layout
+
+The names in parentheses are the Windows counterparts, in [`../windows/`](../windows/) (`src/`, `usermode/`, `scripts/`).
 
 ```text
 linux/
@@ -637,4 +639,4 @@ through `persist` and misbehaves at boot, boot with `module_blacklist=kernelguar
 The kernel module is **GPL-2.0** (`MODULE_LICENSE("GPL")`): it uses `EXPORT_SYMBOL_GPL` interfaces
 (`perf_event_create_kernel_counter`, `lookup_address`, `iommu_get_domain_for_dev`, `sprint_symbol`, …), which the
 kernel only links to GPL-compatible modules. The user-space monitor, scripts and tests are also marked
-GPL-2.0 (SPDX headers in every file); the Windows sources in the parent directory carry no licence header.
+GPL-2.0 (SPDX headers in every file); the Windows sources in `../windows/` carry no licence header.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * kg_main.c - module entry/exit and the /dev/kernelguard character device.
- * Counterpart of src/driver_main.c.
+ * Counterpart of windows/src/driver_main.c.
  *
  * Boot sequence (order matters, as in DriverEntry):
  *   1. state + secure channel first, so anything raised while the other

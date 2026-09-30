@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0
 #
 # kg-deploy.sh - build / sign / load / persist KernelGuard on Linux.
-# Counterpart of Deploy-KernelGuard.ps1.
+# Counterpart of windows/scripts/Deploy-KernelGuard.ps1.
 #
 #   kg-deploy.sh preflight                 what would stop the module loading here?
 #   kg-deploy.sh build                     build module + monitor for the running kernel

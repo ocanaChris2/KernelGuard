@@ -2,7 +2,7 @@
 /*
  * kg_hw.c - Module 2 (hardware half): PCIe discovery, OS/hardware cross-check
  * and DMA-exposure audit.  Counterpart of the PCI/VT-d parts of
- * src/hw_keylogger_detect.c.  The keyboard-path half is kg_input.c.
+ * windows/src/hw_keylogger_detect.c.  The keyboard-path half is kg_input.c.
  *
  *  Discovery      Walk the PCI tree straight from the ECAM (memory-mapped config
  *                 space) found in the ACPI MCFG table, following bridge

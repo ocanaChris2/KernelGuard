@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * kg.h - internal master header of the KernelGuard Linux module.
- * Counterpart of src/KernelGuard.h.
+ * Counterpart of windows/src/KernelGuard.h.
  *
  * Module map (Windows source -> Linux source):
  *   pmu_detection.c         -> kg_pmu.c        Module 1
