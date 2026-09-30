@@ -1,0 +1,37 @@
+name: Bug report
+description: Something misbehaves (not a security vulnerability; see SECURITY.md for those)
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [Windows driver, Windows monitor, Linux module, kgmon, build.py / scripts, Docs]
+    validations: {required: true}
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`kgmon --version`, or DriverVer in KernelGuard.inf, or the commit"
+    validations: {required: true}
+  - type: input
+    id: env
+    attributes:
+      label: OS / kernel / hardware
+      description: "Windows build or `uname -r`; CPU model; VM or bare metal"
+    validations: {required: true}
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`dmesg | grep -i kernelguard`, monitor log, bugcheck code"
+      render: text
