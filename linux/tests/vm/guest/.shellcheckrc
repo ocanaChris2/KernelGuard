@@ -1,5 +1,0 @@
-# These scripts run under busybox ash inside the QEMU guest. They are sourced by init
-# (which picks the file from the kernel command line), so they carry no shebang and
-# shellcheck cannot follow the non-constant `. /tests/$TEST.sh`.
-shell=busybox
-disable=SC1090,SC1091
