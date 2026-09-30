@@ -12,7 +12,8 @@ than large ones.
   prefix), the existing style in `windows/`.
 - New behaviour needs a test (`linux/tests/vm/guest/*.sh` for the module, the known-answer tests
   in `linux/monitor` for `kgmon`) or a note explaining why it cannot be tested.
-- Changes to `windows/` that you could not build or run must say so in the PR.
+- Changes to `windows/` that you could not build or run must say so in the PR. `tools/wdk_syntax_check.py` is
+  a compile check only; it does not replace an MSBuild build or a run on Windows.
 
 ## Building
 
@@ -28,6 +29,7 @@ make -C linux KVER=<ver>   # against another installed header tree
 make -C linux check        # kgmon known-answer tests (no root, loads nothing)
 make -C linux test         # boots a QEMU/KVM guest and runs the module tests there
 python3 tools/version.py   # embedded versions match VERSION
+python3 tools/wdk_syntax_check.py   # windows/ sources type-check against the WDK/SDK headers (clang; compile only)
 reuse lint                 # licence headers / REUSE.toml
 markdownlint-cli2 "**/*.md"
 ```

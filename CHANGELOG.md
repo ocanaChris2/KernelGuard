@@ -29,6 +29,16 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
   (`READY`, `WATCHDOG`, `STOPPING`), and the unit is now `Type=notify` with `WatchdogSec=30`. Example policy and
   wall / webhook / mail actions in `linux/scripts/`, installed inactive by `kg-deploy.sh persist`. New QEMU suite
   `escalate` (52 checks) and unit tests in `kgmon selftest`.
+- **Windows: enforcement policy and hypervisor guard** **(unverified on Windows)**. The driver reads
+  `Parameters\Enforce` (absent = automatic: enforce on bare metal, detect-only when `CPUID.1:ECX[31]` reports a
+  hypervisor; `0` detect only; `1` always enforce). In detect-only mode unauthorized keyboard filters are
+  reported once and left alone and unauthorized DMA is reported, not blocked. `Deploy-KernelGuard.ps1` gains
+  `-Enforcement auto|detect|enforce`. The mode sits in the hashed policy block of the shared state.
+- **Windows monitor: Application event log reporting** **(unverified on Windows)**. Source `KernelGuard`; events
+  900-902 for the monitor, `1000 + alert code` for alerts, 1999 for a notification that failed its HMAC; the
+  deploy script registers and removes the source.
+- `tools/wdk_syntax_check.py`, run by the `lint` workflow: fetches the Windows 11 WDK/SDK headers from NuGet
+  (about 160 MB) and type-checks every file in `windows/src` and `windows/usermode` with clang. Compile-only.
 - `ROADMAP.md` (lab, pilot and production stages with checkable gates) and `docs/THREAT_MODEL.md`.
 - **Linux: graduated response.** A posture ladder (NORMAL < ELEVATED < HIGH < FAIL-SAFE) replaces the single
   fixed reaction: `max_posture` bounds what the module raises by itself, ELEVATED decays after
@@ -39,6 +49,12 @@ marked **(unverified on Windows)** until a Windows CI run or a manual test confi
 
 ### Fixed
 
+- **Windows (unverified on Windows):** the keyboard class driver was whitelisted as `Kbclass`; its name is
+  `Kbdclass`. **Windows:** the shared-state hash covered counters that change at run time, so the driver entered
+  fail-safe by itself on the first integrity check after any event; the counters are now outside the hashed
+  range. **Windows:** the HMAC key came from `RDTSC` and the clock; it now comes from `BCryptGenRandom` and the
+  channel refuses to start without it. All three compile against the 10.0.26100 WDK headers under a clang
+  syntax check and have not been built with MSBuild or run.
 - **Linux: the response to an IDT-hook or control-register alert did not last.** It set every CPU to
   full-spectrum, and the PMU sampler put each CPU back to its baseline strategy a few seconds later. HIGH is now
   a floor that the relax step respects.

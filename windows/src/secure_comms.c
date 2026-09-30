@@ -17,10 +17,11 @@
 //            and reports it. Because the helper runs Ring-0 code that reads
 //            the MSR directly, it bypasses any device-stack hook.
 //
-// Key derivation: at boot, the HMAC key is seeded from RDTSC XOR'd with the
-// current system time. A production implementation would use TPM2_Unseal to
-// unseal a key blob that was sealed to the current PCR state, ensuring that
-// the key is only accessible when the system is in a trusted boot state.
+// Key derivation: at boot, the HMAC key is drawn from the system-preferred CNG
+// random number generator (BCryptGenRandom). A production implementation would
+// use TPM2_Unseal to unseal a key blob that was sealed to the current PCR state,
+// ensuring that the key is only accessible when the system is in a trusted boot
+// state.
 
 #include "KernelGuard.h"
 
@@ -65,18 +66,21 @@ NTSTATUS SecureCommInitialize(VOID)
     MmBuildMdlForNonPagedPool(g_SharedMemMdl);
 
     // ── Derive HMAC key ──────────────────────────────────────────────────────
-    // Seed from the processor's TSC (high-entropy at boot) XOR'd with the
-    // interrupt time (provides additional entropy from system activity).
+    // Drawn from the system-preferred CNG RNG (PASSIVE_LEVEL, no provider handle
+    // needed). If the RNG is unavailable the channel is not started: a key that
+    // is guessable from the TSC and the clock would let anything forge alerts.
     // A production system uses TPM-sealed key material here.
-    LARGE_INTEGER sysTime;
-    KeQuerySystemTimePrecise(&sysTime);
-    ULONG64 seed = __rdtsc() ^ (ULONG64)sysTime.QuadPart;
-
-    for (ULONG i = 0; i < HMAC_KEY_SIZE; i++) {
-        // Rotate and XOR to spread entropy across all 32 key bytes.
-        seed = (seed >> 7) | (seed << 57);
-        seed ^= __rdtsc();
-        g_HmacKey[i] = (UCHAR)(seed & 0xFF);
+    NTSTATUS rng = BCryptGenRandom(NULL, g_HmacKey, HMAC_KEY_SIZE,
+                                   BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (!NT_SUCCESS(rng)) {
+        RtlSecureZeroMemory(g_HmacKey, HMAC_KEY_SIZE);
+        IoFreeMdl(g_SharedMemMdl);
+        g_SharedMemMdl = NULL;
+        MmFreeContiguousMemory(g_SharedMemKernel);
+        g_SharedMemKernel = NULL;
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                   "[KG] BCryptGenRandom failed: 0x%08X\n", rng);
+        return rng;
     }
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,

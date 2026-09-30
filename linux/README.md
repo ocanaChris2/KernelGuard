@@ -107,12 +107,14 @@ from two perf counters per CPU, and taints the kernel (out-of-tree + unsigned un
 
 ### Observations about the Windows implementation
 
-Found while porting; nothing on the Windows side was changed. All are checkable in the source.
+Found while porting; the port itself changed nothing on the Windows side. All are checkable in the source. Items 1 and 7 (and
+the `Kbclass` typo and the `RDTSC` key noted below) have since been fixed in `windows/`; those fixes have not been built or run on Windows.
 
 1. `VerifySharedStateIntegrity()` hashes the range `[0, StateLock)` of `DRIVER_SHARED_STATE`, which contains
    counters incremented by `SecureCommNotify`, `LogAlert`, the DMA/discrepancy paths, etc. The hash is
    computed once (`UpdateSharedStateHash()` in `DriverEntry`) and never refreshed, so the first 30-second check
-   after any counter moved raises `ALERT_SHARED_STATE_CORRUPT` and enters fail-safe.
+   after any counter moved raises `ALERT_SHARED_STATE_CORRUPT` and enters fail-safe. *Since fixed:* the counters
+   moved out of the hashed range, which now holds only the write-once policy block (including the enforcement mode).
 2. `PmiIsr` updates counters and flushes but never calls `SecureCommNotify`/`DispatchCrossModuleEvent`, so
    PMU anomalies are never delivered to the monitor.
 3. `HardenedKeyboardIsr`, `SensContextSwitchHook` (and through it `SmtIsolateSensitiveProcess`,
@@ -123,9 +125,15 @@ Found while porting; nothing on the Windows side was changed. All are checkable 
    set from CPUID.7 EDX[26] (IBRS/IBPB) rather than the MSR; `CPU_FEAT_IBPB` is never set.
 6. `PciEcamRead/Write` use `Bus << 20` without subtracting the MCFG start bus number.
 7. `windows/scripts/stop_driver.bat` stops and deletes a service named `ScpdDriver`, while the README and deploy script name
-   it `KernelGuard`, so the documented recovery script does not match the installed service.
+   it `KernelGuard`, so the documented recovery script does not match the installed service. *Since fixed.*
 8. The MSR "covert channel" writes MSR `0x150` (described as both `IA32_SMRR_PHYSBASE` and an alias of
    `IA32_MCG_CAP`, which is `0x179`); there is no reader for it.
+9. `g_WhitelistedDrivers` named the keyboard class driver `\Driver\Kbclass`; its name is `Kbdclass`. Since the scan
+   examines the top device of `\Device\KeyboardClassN` (which `IoGetDeviceObjectPointer` returns), a system with no
+   other filter would have flagged the class driver itself, and with enforcement on the neutralizer completes its
+   reads with `STATUS_DEVICE_NOT_CONNECTED`. *Since fixed*, from reading the code; not observed on a machine.
+10. The HMAC key was `RDTSC ⊕ system time`, guessable by anything that can estimate boot time. *Since fixed:* it comes
+    from `BCryptGenRandom`.
 
 ---
 

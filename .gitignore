@@ -35,3 +35,6 @@ deploy_log.txt
 
 # Release staging
 /dist/
+
+# Windows header cache used by tools/wdk_syntax_check.py
+/.wdk-cache/

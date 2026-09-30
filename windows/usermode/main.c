@@ -11,9 +11,12 @@
 //     LogWindow_AddAlert().
 //   - The tray icon turns red (IDI_TRAY_ALERT) on the first critical alert
 //     and returns to green (IDI_TRAY_NORMAL) when the log is cleared.
+//   - Every alert is also written to the Windows Application event log (source
+//     "KernelGuard"), so it reaches Event Forwarding or a SIEM agent even when
+//     nobody is looking at the tray. See the EventLog_* helpers below.
 //
 // Compile: cl /W4 /O2 main.c driver_comm.c log_window.c app.rc
-//          /link shell32.lib user32.lib gdi32.lib bcrypt.lib comctl32.lib comdlg32.lib
+//          /link shell32.lib user32.lib gdi32.lib bcrypt.lib comctl32.lib comdlg32.lib advapi32.lib
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -27,6 +30,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 //==============================================================================
 // Globals
@@ -45,6 +49,76 @@ static UINT         g_WmTaskbarCreated = 0;
 // Class name for the hidden message window.
 #define WNDCLASS_NAME   L"ScpdMonitorMsgWnd"
 #define APP_MUTEX_NAME  L"ScpdMonitor_SingleInstance"
+
+//==============================================================================
+// Windows event log
+//
+// Source "KernelGuard" in the Application log. The source is registered by
+// Deploy-KernelGuard.ps1 (HKLM\SYSTEM\CurrentControlSet\Services\EventLog\
+// Application\KernelGuard); without registration events are still recorded, but
+// Event Viewer adds a note that the description cannot be found.
+//
+// Event IDs:  900 monitor started   901 monitor stopped   902 driver not found
+//             1000 + alert code (1001..1049; see kg_shared.h)   1999 HMAC failure
+// Type: Error for critical alerts and forged notifications, Warning for level 1,
+// Information otherwise.
+//==============================================================================
+
+#define KG_EVT_MONITOR_STARTED   900
+#define KG_EVT_MONITOR_STOPPED   901
+#define KG_EVT_DRIVER_NOT_FOUND  902
+#define KG_EVT_ALERT_BASE        1000
+#define KG_EVT_HMAC_FAILED       1999
+
+static HANDLE g_hEventLog = NULL;
+
+static VOID EventLog_Open(VOID)
+{
+    g_hEventLog = RegisterEventSourceW(NULL, L"KernelGuard");
+}
+
+static VOID EventLog_Close(VOID)
+{
+    if (g_hEventLog) {
+        DeregisterEventSource(g_hEventLog);
+        g_hEventLog = NULL;
+    }
+}
+
+static VOID EventLog_WriteText(WORD type, DWORD eventId, LPCWSTR text)
+{
+    if (!g_hEventLog)
+        return;
+    LPCWSTR strings[1] = { text };
+    ReportEventW(g_hEventLog, type, 0, eventId, NULL, 1, 0, strings, NULL);
+}
+
+static VOID EventLog_WriteAlert(const ALERT_RECORD *a)
+{
+    WCHAR line[512];
+    WORD  type;
+    DWORD id;
+
+    if (!a->HmacValid) {
+        // What a notification that failed authentication claims cannot be trusted:
+        // record only that it failed, not what it says.
+        _snwprintf_s(line, ARRAYSIZE(line), _TRUNCATE,
+                     L"Notification %lu failed HMAC verification; its content was ignored. "
+                     L"It may have been forged or tampered with.",
+                     a->SequenceNumber);
+        EventLog_WriteText(EVENTLOG_ERROR_TYPE, KG_EVT_HMAC_FAILED, line);
+        return;
+    }
+
+    type = (a->AlertLevel >= 2) ? EVENTLOG_ERROR_TYPE
+         : (a->AlertLevel == 1) ? EVENTLOG_WARNING_TYPE
+                                : EVENTLOG_INFORMATION_TYPE;
+    id = KG_EVT_ALERT_BASE + a->AlertType;
+    _snwprintf_s(line, ARRAYSIZE(line), _TRUNCATE,
+                 L"%s: %s (sequence %lu, level %lu)",
+                 a->TypeText, a->Details, a->SequenceNumber, a->AlertLevel);
+    EventLog_WriteText(type, id, line);
+}
 
 //==============================================================================
 // Tray icon management
@@ -216,6 +290,8 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg,
             TrayIcon_SetAlert(TRUE);
         }
 
+        EventLog_WriteAlert(a);
+
         // Warn about failed HMAC validation (possible notification tampering).
         if (!a->HmacValid) {
             TrayIcon_ShowBalloon(
@@ -311,8 +387,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
     // ── Create the log window (hidden initially) ───────────────────────────────
     LogWindow_Create(hInst, g_hMsgWnd);
 
+    EventLog_Open();
+
     // ── Connect to driver ─────────────────────────────────────────────────────
     if (!DriverComm_Open()) {
+        EventLog_WriteText(EVENTLOG_WARNING_TYPE, KG_EVT_DRIVER_NOT_FOUND,
+                           L"The KernelGuard kernel driver is not running; no alerts can be received.");
         // Driver not loaded — show a warning balloon then continue monitoring.
         TrayIcon_ShowBalloon(
             L"Driver Not Found",
@@ -322,6 +402,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
     } else {
         // Start background polling; alerts arrive via OnNewAlert → WM_NEW_ALERT.
         DriverComm_StartPolling(OnNewAlert, NULL);
+        EventLog_WriteText(EVENTLOG_INFORMATION_TYPE, KG_EVT_MONITOR_STARTED,
+                           L"KernelGuard Monitor started and connected to the driver.");
 
         TrayIcon_ShowBalloon(
             L"KernelGuard Monitor Active",
@@ -343,6 +425,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
     // ── Cleanup ───────────────────────────────────────────────────────────────
     DriverComm_StopPolling();
     DriverComm_Close();
+    EventLog_WriteText(EVENTLOG_INFORMATION_TYPE, KG_EVT_MONITOR_STOPPED,
+                       L"KernelGuard Monitor stopped.");
+    EventLog_Close();
     CloseHandle(hMutex);
     return (int)msg.wParam;
 }

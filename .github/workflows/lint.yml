@@ -53,3 +53,28 @@ jobs:
 
       - name: Workflows
         run: actionlint
+
+  windows-syntax:
+    # The Windows driver and monitor cannot be built on Linux, but they can be type-checked against the
+    # real WDK/SDK headers with clang. Compile-only: a pass is not a build with MSBuild and proves nothing
+    # about behaviour on Windows (see tools/wdk_syntax_check.py).
+    name: windows sources type-check (clang, compile only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the header fetcher
+        run: pip install -r .github/requirements-ci.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .wdk-cache
+          key: wdk-10.0.26100.6584-sdk-10.0.26100.9169-${{ hashFiles('tools/wdk_syntax_check.py') }}
+
+      - name: Type-check windows/src and windows/usermode
+        run: python3 tools/wdk_syntax_check.py

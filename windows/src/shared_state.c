@@ -38,7 +38,7 @@ volatile ULONG      g_KbdWriteIdx;
 // Driver whitelist — populated at DriverEntry from a signed policy blob.
 // For simplicity, these two are always whitelisted.
 static const WCHAR *g_WhitelistedDrivers[] = {
-    L"\\Driver\\Kbclass",
+    L"\\Driver\\Kbdclass",   // the keyboard class driver (kbdclass.sys); this entry read "Kbclass"
     L"\\Driver\\Kbdhid",
     L"\\Driver\\i8042prt",
     L"\\Driver\\KernelGuard",
@@ -51,6 +51,83 @@ typedef struct { UCHAR Bus, Device, Function; } DMA_AUTH_ENTRY;
 #define MAX_DMA_AUTH 64
 static DMA_AUTH_ENTRY g_AuthorizedDma[MAX_DMA_AUTH];
 static ULONG          g_AuthorizedDmaCount;
+
+//==============================================================================
+// Enforcement policy
+//
+// HKLM\SYSTEM\CurrentControlSet\Services\KernelGuard\Parameters\Enforce (REG_DWORD)
+//     0        detect and report only
+//     1        enforce: neutralize unauthorized keyboard filters, block unauthorized DMA
+//     absent   automatic: enforce on bare metal, detect-only when a hypervisor is present
+//
+// Automatic mode exists because a hypervisor puts its own virtual keyboard filter in
+// the stack; treating it as a rootkit filter takes the guest's keyboard away.
+// The value is stored in the hashed policy block of g_SharedState, so tampering with
+// it is caught by VerifySharedStateIntegrity().
+//==============================================================================
+
+static BOOLEAN KgHypervisorPresent(VOID)
+{
+    int regs[4] = { 0, 0, 0, 0 };
+    __cpuidex(regs, 1, 0);
+    return ((ULONG)regs[2] & 0x80000000UL) != 0;   // CPUID.1:ECX[31] = hypervisor present
+}
+
+VOID KgLoadPolicy(PUNICODE_STRING RegistryPath)
+{
+    PAGED_CODE();
+
+    ULONG   enforce = 0xFFFFFFFFUL;         // "not set"
+    ULONG   unset   = 0xFFFFFFFFUL;
+    BOOLEAN hv      = KgHypervisorPresent();
+    BOOLEAN fromReg = FALSE;
+
+    WCHAR keyPath[320];
+    if (RegistryPath && RegistryPath->Buffer &&
+        NT_SUCCESS(RtlStringCchPrintfW(keyPath, ARRAYSIZE(keyPath),
+                                        L"%wZ\\Parameters", RegistryPath))) {
+        RTL_QUERY_REGISTRY_TABLE table[2];
+        RtlZeroMemory(table, sizeof(table));
+        table[0].Flags         = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+        table[0].Name          = L"Enforce";
+        table[0].EntryContext  = &enforce;
+        table[0].DefaultType   = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+        table[0].DefaultData   = &unset;
+        table[0].DefaultLength = sizeof(unset);
+        if (!NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, keyPath,
+                                               table, NULL, NULL)))
+            enforce = 0xFFFFFFFFUL;         // unreadable is treated as not set
+    }
+
+    LONG mode;
+    if (enforce == 0UL) {
+        mode = 0;
+        fromReg = TRUE;
+    } else if (enforce == 1UL) {
+        mode = 1;
+        fromReg = TRUE;
+    } else {
+        mode = hv ? 0 : 1;
+    }
+
+    g_SharedState.PolicyVersion = KG_POLICY_VERSION;
+    g_SharedState.EnforceMode   = mode;
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[KG] Enforcement %s (%s%s)\n",
+               mode ? "ON" : "OFF (detect and report only)",
+               fromReg ? "Parameters\\Enforce" : "automatic",
+               (!fromReg && hv) ? ", hypervisor present" : "");
+    if (mode && hv && fromReg)
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                   "[KG] WARNING: enforcement forced on inside a virtual machine; "
+                   "the hypervisor's keyboard filter may be neutralized\n");
+}
+
+BOOLEAN KgEnforcing(VOID)
+{
+    return g_SharedState.EnforceMode != 0;
+}
 
 //==============================================================================
 // IsWhitelistedDriver

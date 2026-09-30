@@ -10,6 +10,8 @@ move up. A gate is something you can check, not a feeling. Items marked *(done)*
 - *(done)* Graduated response and an escalation policy on Linux, both tested end to end in QEMU.
 - *(done)* Continuous-integration workflows written and linted (lint, Linux build and QEMU tests, CodeQL, release).
   **None has run on GitHub yet.**
+- *(done)* The Windows sources type-check against the Windows 11 (10.0.26100) WDK and SDK headers with clang
+  (`tools/wdk_syntax_check.py`, part of the `lint` workflow). That is a compile check, not an MSBuild build.
 - Windows driver and monitor exist and build on the maintainer's machine; **nothing in this repository has been built
   or run on a hosted Windows runner**, and the driver is test-signed with HVCI off.
 

@@ -53,7 +53,10 @@ Project documents: [Roadmap](ROADMAP.md) (what "ready" means and the gates to ge
 
 ### Keyboard input loss (confirmed — VMs and some bare-metal configurations)
 
-Module 2 detects unauthorized keyboard filter drivers by comparing hardware-reported devices against the OS driver stack. In a virtual machine (VMware, VirtualBox, Hyper-V, QEMU/KVM) the hypervisor inserts its own virtual keyboard filter drivers into the stack. The driver cannot distinguish these from a rootkit filter and will flag them as `ALERT_UNAUTHORIZED_KBD_FILTER`, patching or detaching the filter via `NeutralizePassThroughDispatch` / `IoDetachDevice`. The result is **complete keyboard input loss** for the VM guest while the driver is running.
+Module 2 detects unauthorized keyboard filter drivers by comparing hardware-reported devices against the OS driver stack. In a virtual machine (VMware, VirtualBox, Hyper-V, QEMU/KVM) the hypervisor inserts its own virtual keyboard filter drivers into the stack. The driver cannot distinguish these from a rootkit filter and flags them as `ALERT_UNAUTHORIZED_KBD_FILTER`; with enforcement on it patches or detaches the filter via `NeutralizePassThroughDispatch` / `IoDetachDevice`. The result is **complete keyboard input loss** for the VM guest while the driver is running.
+
+> [!NOTE]
+> **Guard added, not yet run on Windows.** The driver now reads `CPUID` leaf 1, ECX bit 31 (hypervisor present) and, when the `Enforce` registry value is absent, starts **detect-only** under a hypervisor: it still reports the filter but does not neutralize it. See [Enforcement mode](#enforcement-mode). The change compiles against the Windows 11 (10.0.26100) WDK headers under a clang syntax check, but has not been built with MSBuild or loaded on a machine, so keep the snapshot habit until it has.
 
 **Recovery (mouse must still work):**
 
@@ -61,7 +64,7 @@ Module 2 detects unauthorized keyboard filter drivers by comparing hardware-repo
 2. Alternatively: right-click the Start button → *Terminal (Admin)* → `sc stop KernelGuard` typed via the on-screen keyboard (Settings → Accessibility → Keyboard → On-Screen Keyboard).
 3. In VirtualBox/VMware: revert to a snapshot taken before loading the driver.
 
-**Workaround:** A hypervisor-detection check via `CPUID` leaf `0x1` (bit 31 of ECX = hypervisor present) is planned but not yet implemented. Until it is, avoid loading the driver in a VM for any purpose other than controlled testing with a snapshot ready.
+**Workaround:** on a build without the guard, avoid loading the driver in a VM for any purpose other than controlled testing with a snapshot ready. With the guard, `-Enforcement detect` (or `Parameters\Enforce = 0`) makes that explicit on any machine.
 
 ### False-positive keyboard filter detection on non-standard hardware
 
@@ -453,7 +456,7 @@ Where KernelGuard fits, and what to put around it. The driver watches the *kerne
 | **Laptops that leave your sight** (hotels, shared offices) | **Partial** | Catches kernel-level keylogging and tampering (on Linux, only what appears after load). The evil-maid defence itself is Secure Boot, a firmware password and disk encryption |
 | **Side-channel protection on shared or multi-tenant hosts** | **Not yet** on Windows · **Evaluate** on Linux | On Windows, Module 1 never alerts the monitor and the per-context-switch hook is never registered ([Observations 2–3](linux/README.md#observations-about-the-windows-implementation)). On Linux the kernel's own mitigations do the heavy lifting; `kgmon run --sensitive` adds per-process controls |
 | **Development, research, driver testing** | **Recommended** | Use a disposable VM snapshot (expect keyboard loss in Windows guests) or a test machine with a kernel debugger attached |
-| **Virtual machines, VDI, cloud desktops** | **Not supported** on Windows · **Detect-only** on Linux | There is no hypervisor guard, so the Windows driver neutralizes the hypervisor's virtual keyboard filter and input is lost. On Linux, `enforce=1` would detach it unless it is listed in `kbd_allow=` |
+| **Virtual machines, VDI, cloud desktops** | **Detect-only, unverified** on Windows · **Detect-only** on Linux | The Windows driver now starts detect-only when a hypervisor is present (see [Enforcement mode](#enforcement-mode)); that guard has not been run on Windows yet. On Linux, `enforce=1` would detach the hypervisor's input handler unless it is listed in `kbd_allow=` |
 | **Machines nobody can reach if input stops working** (remote, headless, unattended) | **Avoid** | Recovery needs a working local shell or remote management |
 
 ### Public institutions and other publicly reachable computers
@@ -475,9 +478,9 @@ Libraries, schools, town halls, clinics, internet cafés, hotel business centres
 #### What the current code means for a deployment
 
 - **Windows is test-signed and needs HVCI off.** Test-signing mode normally cannot be enabled while Secure Boot is on, so a Windows pilot runs without two protections that public machines would otherwise want. Production signing is listed under [Known limitations](#known-limitations).
-- **The keyboard whitelist is fixed and there is no detect-only mode.** Any driver in a keyboard stack that is not on the compiled-in list (`g_WhitelistedDrivers` in `windows/src/shared_state.c`) is neutralized on sight and again every 5 seconds. Validate each hardware model first.
+- **The keyboard whitelist is fixed.** With enforcement on (the default on bare metal), any driver in a keyboard stack that is not on the compiled-in list (`g_WhitelistedDrivers` in `windows/src/shared_state.c`) is neutralized on sight and again every 5 seconds; with `Enforce = 0` it is only reported. Validate each hardware model first, in detect-only mode. (The list named the keyboard class driver `Kbclass`; its real name is `Kbdclass`, corrected without a Windows test.)
 - **The PCIe/DMA half of Module 2 is inactive on Windows.** `PciGetEcamBaseFromAcpi` is a stub and `g_VtdMmioBase` is never populated. The DMA allow-list is empty and nothing fills it, so wiring up those two alone would make every device "unauthorized". Rely on firmware and OS DMA protection.
-- **The Windows monitor is local-only.** It shows alerts on the screen in front of the visitor, lets anyone at the console close it or clear its log, and keeps nothing once closed unless someone chooses *Save Log*. There is no Event Log, syslog or network reporting.
+- **The Windows monitor is local-only.** It shows alerts on the screen in front of the visitor, lets anyone at the console close it or clear its log, and keeps nothing once closed unless someone chooses *Save Log*. It now also writes every alert to the Windows Application event log (source `KernelGuard`, see [Event log](#event-log)); there is still no syslog or network reporting of its own, and no escalation policy: forward the event log with Windows Event Forwarding or a SIEM agent.
 - **Linux trusts what is present at load.** Bus masters and input handlers attached when the module loads form the baseline (trust on first use). Load it at boot from a clean, inspected state; a rogue device already attached at that point is invisible to the audit.
 - **Linux persistence is per kernel.** After a kernel update the module must be rebuilt and, under Secure Boot, re-signed. Until then the machine is unprotected, and since `kernelguard-monitor.service` starts only when `/dev/kernelguard` exists, nothing reports it. Pin the kernel on pilot machines or add packaging (DKMS) first, and alert on the module being absent.
 
@@ -504,7 +507,7 @@ Libraries, schools, town halls, clinics, internet cafés, hotel business centres
 
 **4. Operate.**
 
-- **Collect alerts where staff will see them.** On Linux, run `kgmon --syslog --log /var/log/kernelguard-alerts.csv` under the provided `kernelguard-monitor.service` and forward the journal or CSV to your log system; the udev rule logs critical alerts even if the monitor is dead. To page someone, or to escalate an alert that repeats or that nobody acknowledged, add an [escalation policy](linux/README.md#escalation-policy). On Windows the monitor cannot do this yet: keep the pilot to staff-only sessions and use *Save Log*, or add Event Log reporting before scaling out.
+- **Collect alerts where staff will see them.** On Linux, run `kgmon --syslog --log /var/log/kernelguard-alerts.csv` under the provided `kernelguard-monitor.service` and forward the journal or CSV to your log system; the udev rule logs critical alerts even if the monitor is dead. To page someone, or to escalate an alert that repeats or that nobody acknowledged, add an [escalation policy](linux/README.md#escalation-policy). On Windows the monitor writes every alert to the Application event log (source `KernelGuard`, [Event log](#event-log)): forward it with Windows Event Forwarding or your SIEM agent. That path has not been run on Windows yet, so keep the pilot to staff-only sessions and use *Save Log* until you have seen an event arrive.
 - **Treat a missing monitor or module as an alert.** A compromised kernel can suppress notifications, and the sequence-number check only works while the monitor is running.
 
 Respond by alert type:
@@ -678,6 +681,35 @@ The driver project enforces the following key flags (see `windows/src/KernelGuar
 
 # Check current service and monitor status
 .\windows\scripts\Deploy-KernelGuard.ps1 -Action status
+
+# Detect and report only, never neutralize (see Enforcement mode)
+.\windows\scripts\Deploy-KernelGuard.ps1 -Enforcement detect
+```
+
+### Enforcement mode
+
+The driver reads `HKLM\SYSTEM\CurrentControlSet\Services\KernelGuard\Parameters\Enforce` (`REG_DWORD`) once, when it loads:
+
+| Value | Behaviour |
+| --- | --- |
+| absent (`-Enforcement auto`, the default) | enforce on bare metal; **detect-only when a hypervisor is present** (`CPUID.1:ECX[31]`) |
+| `0` (`-Enforcement detect`) | detect and report only: unauthorized keyboard filters are alerted once and left alone; unauthorized DMA is reported, not blocked |
+| `1` (`-Enforcement enforce`) | always enforce, also inside a VM (expect keyboard loss there) |
+
+The chosen mode is written to the debug log at load (`[KG] Enforcement ON/OFF ...`) and stored in the hashed policy block of `g_SharedState`, so flipping it in memory is caught by the integrity check. To change it, set the value and reload the driver:
+
+```powershell
+reg add HKLM\SYSTEM\CurrentControlSet\Services\KernelGuard\Parameters /v Enforce /t REG_DWORD /d 0 /f
+```
+
+This is new and **has not been built or run on Windows**; it compiles against the 10.0.26100 WDK headers under a clang syntax check. Try it in a VM snapshot first.
+
+### Event log
+
+The monitor writes every alert to the Windows **Application** log, source `KernelGuard` (registered by the deploy script). Event IDs: `900` monitor started, `901` stopped, `902` driver not found, `1000 + alert code` for alerts (for example `1022` for `ALERT_TEXT_PATCH`), `1999` for a notification that failed HMAC verification (the event says only that, not what the notification claimed). Level 2 alerts and forged notifications are logged as *Error*, level 1 as *Warning*, the rest as *Information*. Without the source registered the events are still recorded, but Event Viewer adds a note that the description cannot be found.
+
+```powershell
+Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'KernelGuard' } -MaxEvents 20
 ```
 
 ### What the install action does
@@ -687,7 +719,7 @@ The driver project enforces the following key flags (see `windows/src/KernelGuar
 3. **Sign** (unless `-SkipSign`) — creates or reuses a `CN=KernelGuard Test Signing` self-signed certificate in `Cert:\CurrentUser\My`, installs it into `LocalMachine\Root` and `LocalMachine\TrustedPublisher`, then calls `signtool sign /fd sha256`.
 4. **Stop old instance** — terminates the monitor process and stops/removes any existing service.
 5. **Deploy binary** — copies the signed `.sys` to `%SystemRoot%\system32\drivers\`, verifies the installed copy's signature.
-6. **Register service** — writes service registry entries directly under `HKLM\...\Services\KernelGuard` (avoids `sc.exe` pending-deletion races).
+6. **Register service** — writes service registry entries directly under `HKLM\...\Services\KernelGuard` (avoids `sc.exe` pending-deletion races), the `Parameters\Enforce` policy value, and the `KernelGuard` event log source.
 7. **Load driver** — `sc start KernelGuard`.
 8. **Launch monitor** — starts `KernelGuardMonitor.exe`.
 
@@ -829,12 +861,12 @@ Every user-controlled index used to access an array goes through `SafeArrayIndex
 
 | Area | Status |
 | --- | --- |
-| **VM / hypervisor keyboard loss** | Hypervisor virtual keyboard filter drivers are indistinguishable from rootkit filters; M2 neutralizes them, causing complete keyboard loss in the guest. No hypervisor-detection guard (`CPUID` leaf 0x1 bit 31) is implemented yet. **Do not load without a VM snapshot.** See [Warnings & known risks](#warnings--known-risks). |
+| **VM / hypervisor keyboard loss** | Hypervisor virtual keyboard filter drivers are indistinguishable from rootkit filters; with enforcement on, M2 neutralizes them, causing complete keyboard loss in the guest. The driver now starts detect-only when `CPUID` leaf 1 ECX bit 31 reports a hypervisor (unless `Parameters\Enforce = 1`), but that guard has not run on Windows. **Keep a VM snapshot ready.** See [Warnings & known risks](#warnings--known-risks). |
 | **False-positive kbd filter detection** | Third-party keyboard remapping drivers, Bluetooth stacks, KVM switches, and accessibility drivers may not be in the M2 whitelist and will be neutralized. Verify `\Device\KeyboardClass0` stack before loading on non-standard hardware. |
 | **CR4.TSD application crashes** | Inactive in the current source (`EnableTSD()` is never called). If enabled, `RDTSC` from Ring 3 would raise `#GP`. Games, encoders, and Wine/Proton layers that call `RDTSC` at high frequency may crash or degrade severely. |
 | ECAM base lookup | `PciGetEcamBaseFromAcpi` is a stub. Parse the ACPI MCFG table to populate `g_EcamBase`; without it, PCIe scan and BME-disable mitigation are skipped. |
 | VT-d base | `g_VtdMmioBase` must be populated from the ACPI DMAR table. Without it, DMA mitigation falls back to PCIe BME disable (which also requires ECAM). |
-| HMAC key derivation | Currently uses `RDTSC ⊕ system-time`. Replace with `TPM2_Unseal` for production. |
+| HMAC key derivation | Drawn from the system CNG random number generator (`BCryptGenRandom`; the driver refuses to start the channel if it fails). Before, it was `RDTSC ⊕ system time`. Sealing the key to the TPM (`TPM2_Unseal`) is still planned. |
 | Baseline persistence | SHA-256 baselines are captured in memory at boot; they are lost on driver unload. A production system should store them in NVRAM or TPM NV indices. |
 | False-positive `.text` mismatch | Windows Update or EDR products that patch kernel modules after driver load will trigger `ALERT_TEXT_PATCH` and enter fail-safe mode (maximum overhead). |
 | Multi-socket / NUMA | PMU and CAT configuration runs per logical CPU via IPI; cross-socket CAT topology is not verified. |

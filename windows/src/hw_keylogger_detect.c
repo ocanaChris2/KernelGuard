@@ -88,6 +88,12 @@ static KSPIN_LOCK         g_NeutralizedLock;
 static PKTHREAD g_HwMonitorThread;
 static KEVENT   g_HwMonitorStop;
 
+// Filters already reported while enforcement is off, so a detect-only scan does
+// not repeat the same alert every MONITOR_INTERVAL_MS. Guarded by g_NeutralizedLock.
+#define MAX_REPORTED_FILTERS 16
+static PDEVICE_OBJECT g_ReportedFilters[MAX_REPORTED_FILTERS];
+static ULONG          g_ReportedFilterCount;
+
 //==============================================================================
 // NeutralizePassThroughDispatch  [NONPAGED]
 // Replacement dispatch routine installed over an unauthorized filter's
@@ -602,7 +608,9 @@ NTSTATUS PciDetectDiscrepancies(VOID)
                     // IsTopmost: nothing is attached above this device.
                     BOOLEAN isTopmost = (current->AttachedDevice == NULL);
 
-                    // Log the raw detection only if not already in our table.
+                    // Log the raw detection only if not already in our table (or,
+                    // with enforcement off, already reported).
+                    BOOLEAN enforcing = KgEnforcing();
                     BOOLEAN alreadyNeutralized = FALSE;
                     KIRQL irql;
                     KeAcquireSpinLock(&g_NeutralizedLock, &irql);
@@ -612,17 +620,31 @@ NTSTATUS PciDetectDiscrepancies(VOID)
                             break;
                         }
                     }
+                    if (!alreadyNeutralized && !enforcing) {
+                        for (ULONG i = 0; i < g_ReportedFilterCount; i++) {
+                            if (g_ReportedFilters[i] == current) {
+                                alreadyNeutralized = TRUE;
+                                break;
+                            }
+                        }
+                        if (!alreadyNeutralized &&
+                            g_ReportedFilterCount < MAX_REPORTED_FILTERS)
+                            g_ReportedFilters[g_ReportedFilterCount++] = current;
+                    }
                     KeReleaseSpinLock(&g_NeutralizedLock, irql);
 
                     if (!alreadyNeutralized) {
                         LogAlert(ALERT_UNAUTHORIZED_KBD_FILTER,
-                                 "Unauthorized keyboard filter detected: %wZ",
-                                 &drv->DriverName);
+                                 "Unauthorized keyboard filter detected: %wZ%s",
+                                 &drv->DriverName,
+                                 enforcing ? "" : " (detect-only: not neutralized)");
                         InterlockedIncrement(&g_SharedState.HwDiscrepancyCount);
                     }
 
-                    // Neutralize regardless (idempotent; re-applies if needed).
-                    NeutralizeKbdFilterDriver(drv, current, prev, isTopmost);
+                    // Neutralize regardless (idempotent; re-applies if needed) -
+                    // unless enforcement is off, in which case it is only reported.
+                    if (enforcing)
+                        NeutralizeKbdFilterDriver(drv, current, prev, isTopmost);
                 }
             }
             prev    = current;
@@ -695,6 +717,13 @@ NTSTATUS VtdVerifyDmaProtection(VOID)
                 UCHAR hwFunc = (UCHAR)(devFunc & 0x7);
 
                 if (!IsAuthorizedDmaDevice((UCHAR)bus, hwDev, hwFunc)) {
+                    if (!KgEnforcing()) {
+                        LogAlert(ALERT_UNAUTHORIZED_DMA,
+                                 "Unauthorized DMA: %02X:%02X.%X (detect-only: not blocked)",
+                                 bus, hwDev, hwFunc);
+                        InterlockedIncrement(&g_SharedState.HwDmaViolationCount);
+                        continue;
+                    }
                     LogAlert(ALERT_UNAUTHORIZED_DMA,
                              "Unauthorized DMA: %02X:%02X.%X — "
                              "invalidating VT-d context entry",
@@ -749,6 +778,14 @@ vtd_unavailable:
         if (!e->DmaCapable || !e->IsKeyboardRelated)
             continue;
         if (!IsAuthorizedDmaDevice(e->Bus, e->Device, e->Function)) {
+            if (!KgEnforcing()) {
+                LogAlert(ALERT_UNAUTHORIZED_DMA,
+                         "Unauthorized keyboard-class DMA device: %02X:%02X.%X "
+                         "(detect-only: bus master left enabled)",
+                         e->Bus, e->Device, e->Function);
+                InterlockedIncrement(&g_SharedState.HwDmaViolationCount);
+                continue;
+            }
             LogAlert(ALERT_UNAUTHORIZED_DMA,
                      "Unauthorized keyboard-class DMA device: %02X:%02X.%X "
                      "(no VT-d — disabling bus master)",
@@ -803,6 +840,8 @@ NTSTATUS HwKeyloggerInitialize(VOID)
     KeInitializeSpinLock(&g_NeutralizedLock);
     g_NeutralizedCount = 0;
     RtlZeroMemory(g_NeutralizedFilters, sizeof(g_NeutralizedFilters));
+    g_ReportedFilterCount = 0;
+    RtlZeroMemory(g_ReportedFilters, sizeof(g_ReportedFilters));
     KeInitializeEvent(&g_HwMonitorStop, NotificationEvent, FALSE);
 
     // Initial hardware scan (may fail gracefully if ECAM unavailable).
