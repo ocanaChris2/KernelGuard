@@ -65,9 +65,12 @@ Module 2 detects unauthorized keyboard filter drivers by comparing hardware-repo
 
 On systems with Bluetooth keyboards, third-party keyboard remapping software (e.g., AutoHotkey kernel driver, Karabiner, manufacturer companion software), accessibility drivers, or KVM switches, Module 2's whitelist may not include the legitimate filter driver. The driver will neutralize it, potentially silencing keyboard input on that device. Check the driver stack of `\Device\KeyboardClass0` with `!devstack` in WinDbg before loading on a non-standard machine.
 
-### RDTSC restriction may crash applications (CR4.TSD=1)
+### RDTSC restriction may crash applications (CR4.TSD=1) — currently inactive
 
-Module 1 sets `CR4.TSD = 1` on all logical CPUs, causing any Ring-3 `RDTSC` or `RDTSCP` instruction to raise `#GP` instead of returning the counter. The driver's `RdtscGpHandler` counts and emulates the instruction, but the emulation path involves a kernel-mode handler at `HIGH_LEVEL` IRQL. Applications that call `RDTSC` at very high frequency (some games, multimedia encoders, hardware benchmarks, Wine/Proton DirectX translation layers) may experience crashes, incorrect timing, or severe performance degradation. `QueryPerformanceCounter` and `GetSystemTimeAsFileTime` are unaffected.
+> [!NOTE]
+> In the current source `EnableTSD()` is intentionally never called and `RdtscGpHandler` has no caller, so `CR4.TSD` is **not** set and Ring-3 `RDTSC` is unaffected. The risk below applies only if the restriction is ever enabled.
+
+If Module 1 set `CR4.TSD = 1` on all logical CPUs, any Ring-3 `RDTSC` or `RDTSCP` instruction would raise `#GP` instead of returning the counter. The driver's `RdtscGpHandler` counts and emulates the instruction, but the emulation path involves a kernel-mode handler at `HIGH_LEVEL` IRQL. Applications that call `RDTSC` at very high frequency (some games, multimedia encoders, hardware benchmarks, Wine/Proton DirectX translation layers) would experience crashes, incorrect timing, or severe performance degradation. `QueryPerformanceCounter` and `GetSystemTimeAsFileTime` are unaffected.
 
 ### Fail-safe mode causes maximum mitigation overhead
 
@@ -151,15 +154,21 @@ The driver is split into **five synergistic modules** plus shared infrastructure
 - Configures `IA32_PERFEVTSEL0/1` for L1D and L2 cache-miss counting via IPI to every logical CPU.
 - Pre-loads PMC counters near overflow so a PMI fires after `L1D_MISS_THRESHOLD` / `L2_MISS_THRESHOLD` events.
 - PMI ISR (`PmiIsr`) runs at `HIGH_LEVEL` (IRQL 26). Zero paged-memory access, zero kernel API calls — reads `IA32_PERF_GLOBAL_STATUS`, increments anomaly counters, issues an immediate L1D flush when anomaly level is critical.
-- RDTSC profiling: sets `CR4.TSD=1` so that `RDTSC` from Ring 3 raises `#GP`, which `RdtscGpHandler` intercepts and counts per-process. Excessive rates trigger `ALERT_PMU_RDTSC_RATE`.
+- RDTSC profiling (**inactive**: `EnableTSD()` is never called): would set `CR4.TSD=1` so that `RDTSC` from Ring 3 raises `#GP`, which `RdtscGpHandler` intercepts and counts per-process. Excessive rates trigger `ALERT_PMU_RDTSC_RATE`.
 
-**Alert codes emitted:** `ALERT_PMU_L1D_ANOMALY`, `ALERT_PMU_L2_ANOMALY`, `ALERT_PMU_RDTSC_RATE`
+> [!NOTE]
+> **Status on Windows:** `PmiIsr` only counts and flushes; it never notifies the monitor, so the alert codes below are defined but not emitted today.
+
+**Alert codes defined (not yet emitted):** `ALERT_PMU_L1D_ANOMALY`, `ALERT_PMU_L2_ANOMALY`, `ALERT_PMU_RDTSC_RATE`
 
 ### Module 2 — Hardware Keylogger & Peripheral Detection + Mitigation
 
 `windows/src/hw_keylogger_detect.c`
 
-**Detection:**
+> [!NOTE]
+> **Status on Windows:** the DMA half is inert. `PciGetEcamBaseFromAcpi` is a stub, `g_VtdMmioBase` is never populated, and the authorized-device list has no writer, so PCIe/VT-d scanning and BME/context-entry mitigation do not run. The software keyboard-filter half is active.
+
+**Detection (design; DMA parts not active, see note):**
 
 - Walks the PCIe bus tree directly via ECAM (Enhanced Configuration Access Mechanism), bypassing the OS device stack entirely.
 - Compares hardware-discovered keyboard devices against the OS driver stack to detect unauthorized filter drivers.
@@ -628,14 +637,6 @@ $root    = "C:\Users\<you>\...\KernelGuard"
     /p:SolutionDir="$root\windows\" /v:minimal /nologo
 ```
 
-### CMake / Ninja (alternative)
-
-```bat
-:: From an x64 Native Tools Command Prompt for VS 2022/2025:
-cmake --preset x64-debug
-cmake --build --preset x64-debug
-```
-
 ### Compiler flags
 
 The driver project enforces the following key flags (see `windows/src/KernelGuard.vcxproj`):
@@ -828,7 +829,7 @@ Every user-controlled index used to access an array goes through `SafeArrayIndex
 | --- | --- |
 | **VM / hypervisor keyboard loss** | Hypervisor virtual keyboard filter drivers are indistinguishable from rootkit filters; M2 neutralizes them, causing complete keyboard loss in the guest. No hypervisor-detection guard (`CPUID` leaf 0x1 bit 31) is implemented yet. **Do not load without a VM snapshot.** See [Warnings & known risks](#warnings--known-risks). |
 | **False-positive kbd filter detection** | Third-party keyboard remapping drivers, Bluetooth stacks, KVM switches, and accessibility drivers may not be in the M2 whitelist and will be neutralized. Verify `\Device\KeyboardClass0` stack before loading on non-standard hardware. |
-| **CR4.TSD application crashes** | `RDTSC` from Ring 3 raises `#GP` while the driver is loaded. Games, encoders, and Wine/Proton layers that call `RDTSC` at high frequency may crash or degrade severely. |
+| **CR4.TSD application crashes** | Inactive in the current source (`EnableTSD()` is never called). If enabled, `RDTSC` from Ring 3 would raise `#GP`. Games, encoders, and Wine/Proton layers that call `RDTSC` at high frequency may crash or degrade severely. |
 | ECAM base lookup | `PciGetEcamBaseFromAcpi` is a stub. Parse the ACPI MCFG table to populate `g_EcamBase`; without it, PCIe scan and BME-disable mitigation are skipped. |
 | VT-d base | `g_VtdMmioBase` must be populated from the ACPI DMAR table. Without it, DMA mitigation falls back to PCIe BME disable (which also requires ECAM). |
 | HMAC key derivation | Currently uses `RDTSC ⊕ system-time`. Replace with `TPM2_Unseal` for production. |
